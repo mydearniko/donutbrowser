@@ -2,6 +2,12 @@ name: Build Windows Artifact
 
 on:
   workflow_dispatch:
+    inputs:
+      bundle_installer:
+        description: "Also build the NSIS installer. Slower; portable ZIP does not need this."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -58,7 +64,14 @@ jobs:
           mkdir -p src-tauri/binaries
           cp "src-tauri/target/$TARGET/release/donut-proxy.exe" "src-tauri/binaries/donut-proxy-$TARGET.exe"
 
-      - name: Build Tauri app
+      - name: Build Tauri app (portable only)
+        if: ${{ !inputs.bundle_installer }}
+        env:
+          NEXT_PUBLIC_TURNSTILE: ${{ secrets.NEXT_PUBLIC_TURNSTILE }}
+        run: pnpm tauri build --target ${{ env.TARGET }} --verbose --no-bundle
+
+      - name: Build Tauri app with installer
+        if: ${{ inputs.bundle_installer }}
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           NEXT_PUBLIC_TURNSTILE: ${{ secrets.NEXT_PUBLIC_TURNSTILE }}
