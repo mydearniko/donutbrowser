@@ -9,7 +9,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ProBadge } from "@/components/ui/pro-badge";
 import {
   Select,
   SelectContent,
@@ -33,8 +32,6 @@ interface SharedCamoufoxConfigFormProps {
   forceAdvanced?: boolean; // Force advanced mode (for editing)
   readOnly?: boolean; // Flag to indicate if the form should be read-only
   browserType?: "camoufox" | "wayfern"; // Browser type to customize form options
-  crossOsUnlocked?: boolean; // Allow selecting non-current OS (paid feature)
-  limitedMode?: boolean; // Blur and disable advanced fields while keeping basic options accessible
   profileVersion?: string;
   profileBrowser?: string;
 }
@@ -129,8 +126,6 @@ export function SharedCamoufoxConfigForm({
   forceAdvanced = false,
   readOnly = false,
   browserType = "camoufox",
-  crossOsUnlocked = false,
-  limitedMode = false,
   profileVersion,
   profileBrowser,
 }: SharedCamoufoxConfigFormProps) {
@@ -254,7 +249,7 @@ export function SharedCamoufoxConfigForm({
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <Label>{t("fingerprint.osLabel")}</Label>
-          {profileVersion && (!isCreating || crossOsUnlocked) && (
+          {profileVersion && (
             <LoadingButton
               isLoading={isGeneratingFingerprint}
               onClick={handleGenerateFingerprint}
@@ -279,20 +274,14 @@ export function SharedCamoufoxConfigForm({
             <SelectValue placeholder={t("fingerprint.selectOSPlaceholder")} />
           </SelectTrigger>
           <SelectContent>
-            {(["windows", "macos", "linux"] as CamoufoxOS[]).map((os) => {
-              const isDisabled = os !== currentOS && !crossOsUnlocked;
-              return (
-                <SelectItem key={os} value={os} disabled={isDisabled}>
-                  <span className="flex items-center gap-2">
-                    {osLabels[os]}
-                    {isDisabled && <ProBadge />}
-                  </span>
-                </SelectItem>
-              );
-            })}
+            {(["windows", "macos", "linux"] as CamoufoxOS[]).map((os) => (
+              <SelectItem key={os} value={os}>
+                {osLabels[os]}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
-        {selectedOS !== currentOS && crossOsUnlocked && (
+        {selectedOS !== currentOS && (
           <Alert className="mt-2">
             <AlertDescription>
               {t("fingerprint.crossOsWarning")}
@@ -336,32 +325,24 @@ export function SharedCamoufoxConfigForm({
         </div>
       </div>
 
-      <div
-        className={
-          limitedMode ? "relative overflow-hidden rounded-lg" : undefined
-        }
-      >
-        {!limitedMode &&
-          (isEditingDisabled ? (
-            <Alert>
-              <AlertDescription>
-                {readOnly
-                  ? t("fingerprint.editingDisabledRunning")
-                  : t("fingerprint.editingDisabledRandomized")}
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <Alert>
-              <AlertDescription>
-                {t("fingerprint.advancedWarning")}
-              </AlertDescription>
-            </Alert>
-          ))}
+      <div>
+        {isEditingDisabled ? (
+          <Alert>
+            <AlertDescription>
+              {readOnly
+                ? t("fingerprint.editingDisabledRunning")
+                : t("fingerprint.editingDisabledRandomized")}
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <Alert>
+            <AlertDescription>
+              {t("fingerprint.advancedWarning")}
+            </AlertDescription>
+          </Alert>
+        )}
 
-        <fieldset
-          disabled={isEditingDisabled || limitedMode}
-          className="space-y-6"
-        >
+        <fieldset disabled={isEditingDisabled} className="space-y-6">
           {/* Blocking Options - Only available for Camoufox */}
           {browserType === "camoufox" && (
             <div className="space-y-3">
@@ -1136,23 +1117,6 @@ export function SharedCamoufoxConfigForm({
         </div>
       </div> */}
         </fieldset>
-        {limitedMode && (
-          <>
-            <div className="absolute inset-0 backdrop-blur-[6px] bg-background/30 z-[1]" />
-            <div className="absolute inset-y-0 left-0 w-6 bg-linear-to-r from-background to-transparent z-[2]" />
-            <div className="absolute inset-y-0 right-0 w-6 bg-linear-to-l from-background to-transparent z-[2]" />
-            <div className="absolute inset-x-0 top-0 h-6 bg-linear-to-b from-background to-transparent z-[2]" />
-            <div className="absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent z-[2]" />
-            <div className="absolute inset-0 flex items-center justify-center z-[3]">
-              <div className="flex items-center gap-2 rounded-md bg-background/80 px-3 py-1.5">
-                <ProBadge />
-                <span className="text-sm font-medium text-muted-foreground">
-                  {t("fingerprint.proFeature")}
-                </span>
-              </div>
-            </div>
-          </>
-        )}
       </div>
     </div>
   );
@@ -1194,20 +1158,14 @@ export function SharedCamoufoxConfigForm({
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  {(["windows", "macos", "linux"] as CamoufoxOS[]).map((os) => {
-                    const isDisabled = os !== currentOS && !crossOsUnlocked;
-                    return (
-                      <SelectItem key={os} value={os} disabled={isDisabled}>
-                        <span className="flex items-center gap-2">
-                          {osLabels[os]}
-                          {isDisabled && <ProBadge />}
-                        </span>
-                      </SelectItem>
-                    );
-                  })}
+                  {(["windows", "macos", "linux"] as CamoufoxOS[]).map((os) => (
+                    <SelectItem key={os} value={os}>
+                      {osLabels[os]}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
-              {selectedOS !== currentOS && crossOsUnlocked && (
+              {selectedOS !== currentOS && (
                 <Alert className="mt-2">
                   <AlertDescription>
                     {t("fingerprint.crossOsLimitations")}
@@ -1255,15 +1213,8 @@ export function SharedCamoufoxConfigForm({
             </div>
 
             {/* Screen Resolution */}
-            <div
-              className={
-                limitedMode ? "relative overflow-hidden rounded-lg" : undefined
-              }
-            >
-              <fieldset
-                disabled={isEditingDisabled || limitedMode}
-                className="space-y-3"
-              >
+            <div>
+              <fieldset disabled={isEditingDisabled} className="space-y-3">
                 <Label>{t("fingerprint.screenResolution")}</Label>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -1352,23 +1303,6 @@ export function SharedCamoufoxConfigForm({
                   </div>
                 </div>
               </fieldset>
-              {limitedMode && (
-                <>
-                  <div className="absolute inset-0 backdrop-blur-[6px] bg-background/30 z-[1]" />
-                  <div className="absolute inset-y-0 left-0 w-6 bg-linear-to-r from-background to-transparent z-[2]" />
-                  <div className="absolute inset-y-0 right-0 w-6 bg-linear-to-l from-background to-transparent z-[2]" />
-                  <div className="absolute inset-x-0 top-0 h-6 bg-linear-to-b from-background to-transparent z-[2]" />
-                  <div className="absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent z-[2]" />
-                  <div className="absolute inset-0 flex items-center justify-center z-[3]">
-                    <div className="flex items-center gap-2 rounded-md bg-background/80 px-3 py-1.5">
-                      <ProBadge />
-                      <span className="text-sm font-medium text-muted-foreground">
-                        {t("fingerprint.proFeature")}
-                      </span>
-                    </div>
-                  </div>
-                </>
-              )}
             </div>
           </TabsContent>
 

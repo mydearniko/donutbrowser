@@ -1661,7 +1661,6 @@ export default function Home() {
                 setImportProfileDialogOpen(false);
                 setCurrentPage("profiles");
               }}
-              crossOsUnlocked={crossOsUnlocked}
               subPage={currentPage === "import"}
             />
           )}
@@ -1691,7 +1690,6 @@ export default function Home() {
         }}
         onCreateProfile={handleCreateProfile}
         selectedGroupId={selectedGroupId}
-        crossOsUnlocked={crossOsUnlocked}
       />
 
       <CommandPalette
@@ -1810,7 +1808,6 @@ export default function Home() {
             ? runningProfiles.has(currentProfileForCamoufoxConfig.id)
             : false
         }
-        crossOsUnlocked={crossOsUnlocked}
       />
 
       <GroupAssignmentDialog

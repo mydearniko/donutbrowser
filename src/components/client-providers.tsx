@@ -7,6 +7,7 @@ import { CustomThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WindowDragArea } from "@/components/window-drag-area";
+import { WindowResizeHandles } from "@/components/window-resize-handles";
 import { setupLogging } from "@/lib/logger";
 
 export function ClientProviders({ children }: { children: React.ReactNode }) {
@@ -18,6 +19,7 @@ export function ClientProviders({ children }: { children: React.ReactNode }) {
     <I18nProvider>
       <CustomThemeProvider>
         <WindowDragArea />
+        <WindowResizeHandles />
         <TooltipProvider>
           <OnboardingProvider>{children}</OnboardingProvider>
         </TooltipProvider>

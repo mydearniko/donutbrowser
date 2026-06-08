@@ -1,0 +1,97 @@
+name: Build Windows Artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TARGET: x86_64-pc-windows-msvc
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version-file: .node-version
+          cache: "pnpm"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # master
+        with:
+          toolchain: stable
+          targets: ${{ env.TARGET }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workdir: ./src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        env:
+          NEXT_PUBLIC_TURNSTILE: ${{ secrets.NEXT_PUBLIC_TURNSTILE }}
+        run: pnpm exec next build
+
+      - name: Build sidecar binary
+        shell: bash
+        working-directory: ./src-tauri
+        run: cargo build --bin donut-proxy --target "$TARGET" --release
+
+      - name: Copy sidecar binary for Tauri
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          cp "src-tauri/target/$TARGET/release/donut-proxy.exe" "src-tauri/binaries/donut-proxy-$TARGET.exe"
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          NEXT_PUBLIC_TURNSTILE: ${{ secrets.NEXT_PUBLIC_TURNSTILE }}
+        with:
+          projectPath: ./src-tauri
+          args: --target ${{ env.TARGET }} --verbose
+
+      - name: Create portable Windows ZIP
+        shell: bash
+        run: |
+          PORTABLE_DIR="Donut-Portable"
+          mkdir -p "$PORTABLE_DIR"
+
+          cp "src-tauri/target/$TARGET/release/donutbrowser.exe" "$PORTABLE_DIR/Donut.exe"
+          cp "src-tauri/target/$TARGET/release/donut-proxy.exe" "$PORTABLE_DIR/"
+
+          if [ -f "src-tauri/target/$TARGET/release/donut-daemon.exe" ]; then
+            cp "src-tauri/target/$TARGET/release/donut-daemon.exe" "$PORTABLE_DIR/"
+          fi
+
+          if [ -f "src-tauri/target/$TARGET/release/WebView2Loader.dll" ]; then
+            cp "src-tauri/target/$TARGET/release/WebView2Loader.dll" "$PORTABLE_DIR/"
+          fi
+
+          touch "$PORTABLE_DIR/.portable"
+          7z a "Donut_x64-portable.zip" "$PORTABLE_DIR"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-build
+          if-no-files-found: error
+          path: |
+            Donut_x64-portable.zip
+            src-tauri/target/x86_64-pc-windows-msvc/release/donutbrowser.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
