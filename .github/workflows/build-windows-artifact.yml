@@ -3,8 +3,16 @@ name: Build Windows Artifact
 on:
   workflow_dispatch:
     inputs:
+      build_profile:
+        description: "Use debug for fastest portable .exe, release for optimized builds."
+        required: false
+        type: choice
+        default: debug
+        options:
+          - debug
+          - release
       bundle_installer:
-        description: "Also build the NSIS installer. Slower; portable ZIP does not need this."
+        description: "Release profile only. Also build the NSIS installer. Slower; portable ZIP does not need this."
         required: false
         type: boolean
         default: false
@@ -44,56 +52,56 @@ jobs:
         uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workdir: ./src-tauri
+          shared-key: windows-${{ env.TARGET }}-${{ inputs.build_profile }}
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Validate build options
+        if: ${{ inputs.build_profile == 'debug' && inputs.bundle_installer }}
+        run: |
+          Write-Error "bundle_installer requires build_profile=release. Debug mode is portable-only."
+          exit 1
 
       - name: Build frontend
         env:
           NEXT_PUBLIC_TURNSTILE: ${{ secrets.NEXT_PUBLIC_TURNSTILE }}
         run: pnpm exec next build
 
-      - name: Build sidecar binary
-        shell: bash
-        working-directory: ./src-tauri
-        run: cargo build --bin donut-proxy --target "$TARGET" --release
-
-      - name: Copy sidecar binary for Tauri
-        shell: bash
+      - name: Build Tauri app
+        env:
+          NEXT_PUBLIC_TURNSTILE: ${{ secrets.NEXT_PUBLIC_TURNSTILE }}
+          PROFILE: ${{ inputs.build_profile }}
+          BUILD_PROFILE: ${{ inputs.build_profile }}
+          BUNDLE_INSTALLER: ${{ inputs.bundle_installer }}
         run: |
-          mkdir -p src-tauri/binaries
-          cp "src-tauri/target/$TARGET/release/donut-proxy.exe" "src-tauri/binaries/donut-proxy-$TARGET.exe"
+          $args = @("build", "--target", "${env:TARGET}", "--verbose")
 
-      - name: Build Tauri app (portable only)
-        if: ${{ !inputs.bundle_installer }}
-        env:
-          NEXT_PUBLIC_TURNSTILE: ${{ secrets.NEXT_PUBLIC_TURNSTILE }}
-        run: pnpm tauri build --target ${{ env.TARGET }} --verbose --no-bundle
+          if ($env:BUILD_PROFILE -eq "debug") {
+            $args += @("--debug", "--no-bundle")
+          } elseif ($env:BUNDLE_INSTALLER -ne "true") {
+            $args += "--no-bundle"
+          }
 
-      - name: Build Tauri app with installer
-        if: ${{ inputs.bundle_installer }}
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
-        env:
-          NEXT_PUBLIC_TURNSTILE: ${{ secrets.NEXT_PUBLIC_TURNSTILE }}
-        with:
-          projectPath: ./src-tauri
-          args: --target ${{ env.TARGET }} --verbose
+          pnpm tauri @args
 
       - name: Create portable Windows ZIP
         shell: bash
+        env:
+          BUILD_PROFILE: ${{ inputs.build_profile }}
         run: |
           PORTABLE_DIR="Donut-Portable"
           mkdir -p "$PORTABLE_DIR"
 
-          cp "src-tauri/target/$TARGET/release/donutbrowser.exe" "$PORTABLE_DIR/Donut.exe"
-          cp "src-tauri/target/$TARGET/release/donut-proxy.exe" "$PORTABLE_DIR/"
+          cp "src-tauri/target/$TARGET/$BUILD_PROFILE/donutbrowser.exe" "$PORTABLE_DIR/Donut.exe"
+          cp "src-tauri/binaries/donut-proxy-$TARGET.exe" "$PORTABLE_DIR/donut-proxy.exe"
 
-          if [ -f "src-tauri/target/$TARGET/release/donut-daemon.exe" ]; then
-            cp "src-tauri/target/$TARGET/release/donut-daemon.exe" "$PORTABLE_DIR/"
+          if [ -f "src-tauri/target/$TARGET/$BUILD_PROFILE/donut-daemon.exe" ]; then
+            cp "src-tauri/target/$TARGET/$BUILD_PROFILE/donut-daemon.exe" "$PORTABLE_DIR/"
           fi
 
-          if [ -f "src-tauri/target/$TARGET/release/WebView2Loader.dll" ]; then
-            cp "src-tauri/target/$TARGET/release/WebView2Loader.dll" "$PORTABLE_DIR/"
+          if [ -f "src-tauri/target/$TARGET/$BUILD_PROFILE/WebView2Loader.dll" ]; then
+            cp "src-tauri/target/$TARGET/$BUILD_PROFILE/WebView2Loader.dll" "$PORTABLE_DIR/"
           fi
 
           touch "$PORTABLE_DIR/.portable"
@@ -102,9 +110,9 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-x64-build
+          name: windows-x64-${{ inputs.build_profile }}
           if-no-files-found: error
           path: |
             Donut_x64-portable.zip
-            src-tauri/target/x86_64-pc-windows-msvc/release/donutbrowser.exe
+            src-tauri/target/x86_64-pc-windows-msvc/*/donutbrowser.exe
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
