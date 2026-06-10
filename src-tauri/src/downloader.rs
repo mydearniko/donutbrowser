@@ -982,26 +982,10 @@ impl Downloader {
       tokens.remove(&download_key);
     }
 
-    // Auto-update non-running profiles to the latest installed version and cleanup unused binaries
+    // Cleanup unused binaries after manual downloads. Automatic profile
+    // version updates are disabled for this fork.
     {
-      let app_handle_for_update = app_handle.clone();
       tauri::async_runtime::spawn(async move {
-        let auto_updater = crate::auto_updater::AutoUpdater::instance();
-        match auto_updater.update_profiles_to_latest_installed(&app_handle_for_update) {
-          Ok(updated) => {
-            if !updated.is_empty() {
-              log::info!(
-                "Auto-updated {} profiles to latest installed versions: {:?}",
-                updated.len(),
-                updated
-              );
-            }
-          }
-          Err(e) => {
-            log::error!("Failed to auto-update profile versions: {e}");
-          }
-        }
-
         let registry = crate::downloaded_browsers_registry::DownloadedBrowsersRegistry::instance();
         match registry.cleanup_unused_binaries() {
           Ok(cleaned) => {

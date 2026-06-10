@@ -115,9 +115,11 @@ pub struct AppUpdateInfo {
 
 pub struct AppAutoUpdater {
   client: Client,
+  #[allow(dead_code)]
   extractor: &'static crate::extraction::Extractor,
 }
 
+#[allow(dead_code)]
 impl AppAutoUpdater {
   fn new() -> Self {
     Self {
@@ -1724,37 +1726,8 @@ rm "{}"
 
 #[tauri::command]
 pub async fn check_for_app_updates() -> Result<Option<AppUpdateInfo>, String> {
-  if crate::app_dirs::is_portable() {
-    log::info!("App auto-updates disabled in portable mode");
-    return Ok(None);
-  }
-  // The disable_auto_updates setting controls app self-updates only
-  let disabled = crate::settings_manager::SettingsManager::instance()
-    .load_settings()
-    .map(|s| s.disable_auto_updates)
-    .unwrap_or(false);
-  if disabled {
-    log::info!("App auto-updates disabled by user setting");
-    return Ok(None);
-  }
-
-  let updater = AppAutoUpdater::instance();
-  updater
-    .check_for_updates()
-    .await
-    .map_err(|e| format!("Failed to check for app updates: {e}"))
-}
-
-#[tauri::command]
-pub async fn download_and_prepare_app_update(
-  app_handle: tauri::AppHandle,
-  update_info: AppUpdateInfo,
-) -> Result<(), String> {
-  let updater = AppAutoUpdater::instance();
-  updater
-    .download_and_prepare_update(&app_handle, &update_info)
-    .await
-    .map_err(|e| format!("Failed to download and prepare app update: {e}"))
+  log::info!("Automatic app update checks are disabled for this fork");
+  Ok(None)
 }
 
 #[tauri::command]
@@ -1769,6 +1742,11 @@ pub async fn restart_application() -> Result<(), String> {
 #[tauri::command]
 pub async fn check_for_app_updates_manual() -> Result<Option<AppUpdateInfo>, String> {
   log::info!("Manual app update check triggered");
+  if crate::app_dirs::is_portable() {
+    log::info!("App updates disabled in portable mode");
+    return Ok(None);
+  }
+
   let updater = AppAutoUpdater::instance();
   updater
     .check_for_updates()

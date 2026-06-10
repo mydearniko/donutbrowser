@@ -62,9 +62,7 @@ pub mod vpn;
 pub mod vpn_worker_runner;
 pub mod vpn_worker_storage;
 
-use browser_runner::{
-  check_browser_exists, kill_browser_profile, launch_browser_profile, open_url_with_profile,
-};
+use browser_runner::{kill_browser_profile, launch_browser_profile, open_url_with_profile};
 
 use profile::manager::{
   check_browser_status, clone_profile, create_browser_profile_new, delete_profile,
@@ -113,18 +111,12 @@ use tag_manager::get_all_tags;
 use default_browser::{is_default_browser, set_as_default_browser};
 
 use version_updater::{
-  clear_all_version_cache_and_refetch, get_version_update_status, get_version_updater,
-  trigger_manual_version_update,
+  clear_all_version_cache_and_refetch, get_version_update_status, trigger_manual_version_update,
 };
 
-use auto_updater::{
-  check_for_browser_updates, complete_browser_update_with_auto_update, dismiss_update_notification,
-};
+use auto_updater::check_for_browser_updates;
 
-use app_auto_updater::{
-  check_for_app_updates, check_for_app_updates_manual, download_and_prepare_app_update,
-  restart_application,
-};
+use app_auto_updater::{check_for_app_updates, check_for_app_updates_manual, restart_application};
 
 use profile_importer::{detect_existing_profiles, import_browser_profile};
 
@@ -1510,30 +1502,7 @@ pub fn run() {
         });
       }
 
-      // Initialize and start background version updater
-      let app_handle = app.handle().clone();
-      tauri::async_runtime::spawn(async move {
-        let version_updater = get_version_updater();
-
-        // Set the app handle
-        {
-          let mut updater_guard = version_updater.lock().await;
-          updater_guard.set_app_handle(app_handle);
-        }
-
-        // Run startup check without holding the lock
-        {
-          let updater_guard = version_updater.lock().await;
-          if let Err(e) = updater_guard.start_background_updates().await {
-            log::error!("Failed to start background updates: {e}");
-          }
-        }
-      });
-
-      // Start the background update task separately
-      tauri::async_runtime::spawn(async move {
-        version_updater::VersionUpdater::run_background_task().await;
-      });
+      log::info!("Automatic version update checks are disabled for this fork");
 
       // Auto-start MCP server if it was previously enabled. Always log the
       // decision so customer logs reveal whether MCP is actually running —
@@ -1672,34 +1641,7 @@ pub fn run() {
         }
       });
 
-      // Immediately bump non-running profiles to the latest installed browser version.
-      // This runs synchronously before any network calls so profiles are updated on launch.
-      {
-        let app_handle_bump = app.handle().clone();
-        match auto_updater::AutoUpdater::instance()
-          .update_profiles_to_latest_installed(&app_handle_bump)
-        {
-          Ok(updated) => {
-            if !updated.is_empty() {
-              log::info!(
-                "Startup: bumped {} profiles to latest installed versions: {:?}",
-                updated.len(),
-                updated
-              );
-            }
-          }
-          Err(e) => {
-            log::error!("Startup: failed to bump profiles to latest installed versions: {e}");
-          }
-        }
-      }
-
-      let app_handle_auto_updater = app.handle().clone();
-
-      // Start the auto-update check task separately
-      tauri::async_runtime::spawn(async move {
-        auto_updater::check_for_updates_with_progress(app_handle_auto_updater).await;
-      });
+      log::info!("Automatic browser update checks are disabled for this fork");
 
       // Handle any pending URLs that were received before the window was ready
       let handle_pending = handle.clone();
@@ -1760,34 +1702,7 @@ pub fn run() {
         }
       });
 
-      tauri::async_runtime::spawn(async move {
-        let updater = app_auto_updater::AppAutoUpdater::instance();
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3 * 60 * 60));
-
-        loop {
-          interval.tick().await;
-
-          log::info!("Checking for app updates...");
-          match updater.check_for_updates().await {
-            Ok(Some(update_info)) => {
-              log::info!(
-                "App update available: {} -> {}",
-                update_info.current_version,
-                update_info.new_version
-              );
-              if let Err(e) = events::emit("app-update-available", &update_info) {
-                log::error!("Failed to emit app update event: {e}");
-              }
-            }
-            Ok(None) => {
-              log::debug!("No app updates available");
-            }
-            Err(e) => {
-              log::error!("Failed to check for app updates: {e}");
-            }
-          }
-        }
-      });
+      log::info!("Automatic app update checks are disabled for this fork");
 
       // Start Camoufox cleanup task
       let _app_handle_cleanup = app.handle().clone();
@@ -2162,7 +2077,6 @@ pub fn run() {
       cancel_download,
       delete_profile,
       clone_profile,
-      check_browser_exists,
       create_browser_profile_new,
       list_browser_profiles,
       launch_browser_profile,
@@ -2201,11 +2115,8 @@ pub fn run() {
       trigger_manual_version_update,
       get_version_update_status,
       check_for_browser_updates,
-      dismiss_update_notification,
-      complete_browser_update_with_auto_update,
       check_for_app_updates,
       check_for_app_updates_manual,
-      download_and_prepare_app_update,
       restart_application,
       detect_existing_profiles,
       import_browser_profile,

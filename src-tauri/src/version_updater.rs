@@ -3,9 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
-use tokio::time::interval;
 
 use crate::auto_updater::AutoUpdater;
 use crate::browser_version_manager::BrowserVersionManager;
@@ -49,7 +48,6 @@ impl Default for BackgroundUpdateState {
 pub struct VersionUpdater {
   browser_version_manager: &'static BrowserVersionManager,
   auto_updater: &'static AutoUpdater,
-  app_handle: Option<tauri::AppHandle>,
 }
 
 impl VersionUpdater {
@@ -57,12 +55,7 @@ impl VersionUpdater {
     Self {
       browser_version_manager: BrowserVersionManager::instance(),
       auto_updater: AutoUpdater::instance(),
-      app_handle: None,
     }
-  }
-
-  pub fn set_app_handle(&mut self, app_handle: tauri::AppHandle) {
-    self.app_handle = Some(app_handle);
   }
 
   fn get_cache_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -110,147 +103,9 @@ impl VersionUpdater {
       .as_secs()
   }
 
-  fn should_run_background_update() -> bool {
-    let state = Self::load_background_update_state();
-    let current_time = Self::get_current_timestamp();
-    let elapsed_secs = current_time.saturating_sub(state.last_update_time);
-    let update_interval_secs = state.update_interval_hours * 60 * 60;
-
-    // Run update if:
-    // 1. Never updated before (last_update_time == 0)
-    // 2. More than 3 hours have passed since last update
-    let should_update = state.last_update_time == 0 || elapsed_secs >= update_interval_secs;
-
-    if should_update {
-      log::debug!(
-        "Background update needed: last_update={}, elapsed={}h, required={}h",
-        state.last_update_time,
-        elapsed_secs / 3600,
-        state.update_interval_hours
-      );
-    } else {
-      log::debug!(
-        "Background update not needed: last_update={}, elapsed={}h, required={}h",
-        state.last_update_time,
-        elapsed_secs / 3600,
-        state.update_interval_hours
-      );
-    }
-
-    should_update
-  }
-
-  pub async fn check_and_run_startup_update(
-    &self,
-  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Always check for updates on launch
-    if let Some(ref app_handle) = self.app_handle {
-      log::info!("Running startup version update...");
-
-      match self.update_all_browser_versions(app_handle).await {
-        Ok(_) => {
-          // Update the persistent state after successful update
-          let state = BackgroundUpdateState {
-            last_update_time: Self::get_current_timestamp(),
-            update_interval_hours: 3,
-          };
-
-          if let Err(e) = Self::save_background_update_state(&state) {
-            log::error!("Failed to save background update state: {e}");
-          } else {
-            log::info!("Startup version update completed successfully");
-          }
-        }
-        Err(e) => {
-          log::error!("Startup version update failed: {e}");
-          return Err(e);
-        }
-      }
-    } else {
-      return Err("App handle not available for startup update".into());
-    }
-
-    Ok(())
-  }
-
-  pub async fn start_background_updates(
-    &self,
-  ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!(
-      "Starting background version update service (checking every 5 minutes for 3-hour intervals)"
-    );
-
-    // Run initial startup check
-    if let Err(e) = self.check_and_run_startup_update().await {
-      eprintln!("Startup version update failed: {e}");
-    }
-
-    Ok(())
-  }
-
-  pub async fn run_background_task() {
-    let mut update_interval = interval(Duration::from_secs(5 * 60)); // Check every 5 minutes
-    update_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    loop {
-      update_interval.tick().await;
-
-      // Check if we should run an update based on persistent state
-      if !Self::should_run_background_update() {
-        continue;
-      }
-
-      println!("Starting background version update...");
-
-      // Get the updater instance for this update cycle
-      let updater = get_version_updater();
-      let result = {
-        let updater_guard = updater.lock().await;
-        if let Some(ref app_handle) = updater_guard.app_handle {
-          updater_guard.update_all_browser_versions(app_handle).await
-        } else {
-          Err("App handle not available for background update".into())
-        }
-      }; // Release the lock here
-
-      match result {
-        Ok(_) => {
-          // Update the persistent state after successful update
-          let state = BackgroundUpdateState {
-            last_update_time: Self::get_current_timestamp(),
-            update_interval_hours: 3,
-          };
-
-          if let Err(e) = Self::save_background_update_state(&state) {
-            eprintln!("Failed to save background update state: {e}");
-          } else {
-            println!("Background version update completed successfully");
-          }
-        }
-        Err(e) => {
-          eprintln!("Background version update failed: {e}");
-
-          // Try to emit error event if we have an app handle
-          let updater_guard = updater.lock().await;
-          if let Some(ref _app_handle) = updater_guard.app_handle {
-            let progress = VersionUpdateProgress {
-              current_browser: "".to_string(),
-              total_browsers: 0,
-              completed_browsers: 0,
-              new_versions_found: 0,
-              browser_new_versions: 0,
-              status: "error".to_string(),
-            };
-            let _ = events::emit("version-update-progress", &progress);
-          }
-        }
-      }
-    }
-  }
-
   async fn update_all_browser_versions(
     &self,
-    app_handle: &tauri::AppHandle,
+    _app_handle: &tauri::AppHandle,
   ) -> Result<Vec<BackgroundUpdateResult>, Box<dyn std::error::Error + Send + Sync>> {
     let supported_browsers = self.browser_version_manager.get_supported_browsers();
 
@@ -357,15 +212,9 @@ impl VersionUpdater {
       eprintln!("Failed to emit completion progress: {e}");
     }
 
-    // Always check for auto-updates — profiles may still be on older versions
-    // even if no new versions were found in the cache this cycle
-    println!(
-      "Checking for browser auto-updates (found {total_new_versions} new versions in cache)..."
+    log::info!(
+      "Browser auto-updates are disabled; version cache update found {total_new_versions} new versions"
     );
-    self
-      .auto_updater
-      .check_for_updates_with_progress(app_handle)
-      .await;
 
     Ok(results)
   }
@@ -591,67 +440,6 @@ mod tests {
   }
 
   #[test]
-  #[serial]
-  fn test_should_run_background_update_logic() {
-    let _temp_dir = setup_test_env();
-
-    // Clean up any existing state file first
-    cleanup_state_file();
-
-    let current_time = VersionUpdater::get_current_timestamp();
-
-    // Test with recent update (should not update)
-    let recent_state = BackgroundUpdateState {
-      last_update_time: current_time - 60, // 1 minute ago
-      update_interval_hours: 3,
-    };
-
-    // Save and test recent state
-    let save_result = VersionUpdater::save_background_update_state(&recent_state);
-    assert!(save_result.is_ok(), "Should save recent state successfully");
-
-    let should_update_recent = VersionUpdater::should_run_background_update();
-    assert!(
-      !should_update_recent,
-      "Should not update when last update was recent"
-    );
-
-    // Test with old update (should update)
-    let old_state = BackgroundUpdateState {
-      last_update_time: current_time - (4 * 60 * 60), // 4 hours ago
-      update_interval_hours: 3,
-    };
-
-    // Save and test old state
-    let save_result = VersionUpdater::save_background_update_state(&old_state);
-    assert!(save_result.is_ok(), "Should save old state successfully");
-
-    let should_update_old = VersionUpdater::should_run_background_update();
-    assert!(should_update_old, "Should update when last update was old");
-
-    // Test with never updated (should update)
-    let never_updated_state = BackgroundUpdateState {
-      last_update_time: 0,
-      update_interval_hours: 3,
-    };
-
-    let save_result = VersionUpdater::save_background_update_state(&never_updated_state);
-    assert!(
-      save_result.is_ok(),
-      "Should save never updated state successfully"
-    );
-
-    let should_update_never = VersionUpdater::should_run_background_update();
-    assert!(
-      should_update_never,
-      "Should update when never updated before"
-    );
-
-    // Clean up
-    cleanup_state_file();
-  }
-
-  #[test]
   fn test_version_updater_creation() {
     let updater = VersionUpdater::new();
 
@@ -666,10 +454,6 @@ mod tests {
     assert!(
       !std::ptr::eq(updater.auto_updater as *const _, std::ptr::null()),
       "Auto updater should not be null"
-    );
-    assert!(
-      updater.app_handle.is_none(),
-      "App handle should initially be None"
     );
   }
 

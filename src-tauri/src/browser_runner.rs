@@ -1,7 +1,6 @@
 use crate::browser::ProxySettings;
 use crate::camoufox_manager::{CamoufoxConfig, CamoufoxManager};
 use crate::cloud_auth::CLOUD_AUTH;
-use crate::downloaded_browsers_registry::DownloadedBrowsersRegistry;
 use crate::events;
 use crate::platform_browser;
 use crate::profile::{BrowserProfile, ProfileManager};
@@ -14,8 +13,6 @@ use sysinfo::System;
 
 pub struct BrowserRunner {
   pub profile_manager: &'static ProfileManager,
-  pub downloaded_browsers_registry: &'static DownloadedBrowsersRegistry,
-  auto_updater: &'static crate::auto_updater::AutoUpdater,
   camoufox_manager: &'static CamoufoxManager,
   wayfern_manager: &'static WayfernManager,
 }
@@ -24,8 +21,6 @@ impl BrowserRunner {
   fn new() -> Self {
     Self {
       profile_manager: ProfileManager::instance(),
-      downloaded_browsers_registry: DownloadedBrowsersRegistry::instance(),
-      auto_updater: crate::auto_updater::AutoUpdater::instance(),
       camoufox_manager: CamoufoxManager::instance(),
       wayfern_manager: WayfernManager::instance(),
     }
@@ -1379,59 +1374,6 @@ impl BrowserRunner {
         .save_process_info(&updated_profile)
         .map_err(|e| format!("Failed to update profile: {e}"))?;
 
-      // Check for pending updates and apply them for Camoufox profiles too
-      if let Ok(Some(pending_update)) = self
-        .auto_updater
-        .get_pending_update(&profile.browser, &profile.version)
-      {
-        log::info!(
-          "Found pending update for Camoufox profile {}: {} -> {}",
-          profile.name,
-          profile.version,
-          pending_update.new_version
-        );
-
-        match self.profile_manager.update_profile_version(
-          &app_handle,
-          &profile.id.to_string(),
-          &pending_update.new_version,
-        ) {
-          Ok(updated_profile_after_update) => {
-            log::info!(
-              "Successfully updated Camoufox profile {} from version {} to {}",
-              profile.name,
-              profile.version,
-              pending_update.new_version
-            );
-            updated_profile = updated_profile_after_update;
-
-            if let Err(e) = self
-              .auto_updater
-              .dismiss_update_notification(&pending_update.id)
-            {
-              log::warn!("Warning: Failed to dismiss pending update notification: {e}");
-            }
-          }
-          Err(e) => {
-            log::error!(
-              "Failed to apply pending update for Camoufox profile {}: {}",
-              profile.name,
-              e
-            );
-          }
-        }
-      }
-
-      // If no pending update was applied, check if a newer installed version exists
-      if updated_profile.version == profile.version {
-        if let Some(p) = self
-          .auto_updater
-          .update_profile_to_latest_installed(&app_handle, &updated_profile)
-        {
-          updated_profile = p;
-        }
-      }
-
       log::info!(
         "Emitting profile events for successful Camoufox kill: {}",
         updated_profile.name
@@ -1477,19 +1419,6 @@ impl BrowserRunner {
         profile.name,
         profile.id
       );
-
-      // Consolidate browser versions after stopping a browser
-      if let Ok(consolidated) = self
-        .downloaded_browsers_registry
-        .consolidate_browser_versions(&app_handle)
-      {
-        if !consolidated.is_empty() {
-          log::info!("Post-stop version consolidation results:");
-          for action in &consolidated {
-            log::info!("  {action}");
-          }
-        }
-      }
 
       return Ok(());
     }
@@ -1724,59 +1653,6 @@ impl BrowserRunner {
         .save_process_info(&updated_profile)
         .map_err(|e| format!("Failed to update profile: {e}"))?;
 
-      // Check for pending updates and apply them
-      if let Ok(Some(pending_update)) = self
-        .auto_updater
-        .get_pending_update(&profile.browser, &profile.version)
-      {
-        log::info!(
-          "Found pending update for Wayfern profile {}: {} -> {}",
-          profile.name,
-          profile.version,
-          pending_update.new_version
-        );
-
-        match self.profile_manager.update_profile_version(
-          &app_handle,
-          &profile.id.to_string(),
-          &pending_update.new_version,
-        ) {
-          Ok(updated_profile_after_update) => {
-            log::info!(
-              "Successfully updated Wayfern profile {} from version {} to {}",
-              profile.name,
-              profile.version,
-              pending_update.new_version
-            );
-            updated_profile = updated_profile_after_update;
-
-            if let Err(e) = self
-              .auto_updater
-              .dismiss_update_notification(&pending_update.id)
-            {
-              log::warn!("Warning: Failed to dismiss pending update notification: {e}");
-            }
-          }
-          Err(e) => {
-            log::error!(
-              "Failed to apply pending update for Wayfern profile {}: {}",
-              profile.name,
-              e
-            );
-          }
-        }
-      }
-
-      // If no pending update was applied, check if a newer installed version exists
-      if updated_profile.version == profile.version {
-        if let Some(p) = self
-          .auto_updater
-          .update_profile_to_latest_installed(&app_handle, &updated_profile)
-        {
-          updated_profile = p;
-        }
-      }
-
       log::info!(
         "Emitting profile events for successful Wayfern kill: {}",
         updated_profile.name
@@ -1822,19 +1698,6 @@ impl BrowserRunner {
         profile.name,
         profile.id
       );
-
-      // Consolidate browser versions after stopping a browser
-      if let Ok(consolidated) = self
-        .downloaded_browsers_registry
-        .consolidate_browser_versions(&app_handle)
-      {
-        if !consolidated.is_empty() {
-          log::info!("Post-stop version consolidation results:");
-          for action in &consolidated {
-            log::info!("  {action}");
-          }
-        }
-      }
 
       return Ok(());
     }
@@ -2015,59 +1878,6 @@ impl BrowserRunner {
       .save_process_info(&updated_profile)
       .map_err(|e| format!("Failed to update profile: {e}"))?;
 
-    // Check for pending updates and apply them
-    if let Ok(Some(pending_update)) = self
-      .auto_updater
-      .get_pending_update(&profile.browser, &profile.version)
-    {
-      log::info!(
-        "Found pending update for profile {}: {} -> {}",
-        profile.name,
-        profile.version,
-        pending_update.new_version
-      );
-
-      match self.profile_manager.update_profile_version(
-        &app_handle,
-        &profile.id.to_string(),
-        &pending_update.new_version,
-      ) {
-        Ok(updated_profile_after_update) => {
-          log::info!(
-            "Successfully updated profile {} from version {} to {}",
-            profile.name,
-            profile.version,
-            pending_update.new_version
-          );
-          updated_profile = updated_profile_after_update;
-
-          if let Err(e) = self
-            .auto_updater
-            .dismiss_update_notification(&pending_update.id)
-          {
-            log::warn!("Warning: Failed to dismiss pending update notification: {e}");
-          }
-        }
-        Err(e) => {
-          log::error!(
-            "Failed to apply pending update for profile {}: {}",
-            profile.name,
-            e
-          );
-        }
-      }
-    }
-
-    // If no pending update was applied, check if a newer installed version exists
-    if updated_profile.version == profile.version {
-      if let Some(p) = self
-        .auto_updater
-        .update_profile_to_latest_installed(&app_handle, &updated_profile)
-      {
-        updated_profile = p;
-      }
-    }
-
     log::info!(
       "Emitting profile events for successful kill: {}",
       updated_profile.name
@@ -2097,19 +1907,6 @@ impl BrowserRunner {
         updated_profile.name,
         payload.is_running
       );
-    }
-
-    // Consolidate browser versions after stopping a browser
-    if let Ok(consolidated) = self
-      .downloaded_browsers_registry
-      .consolidate_browser_versions(&app_handle)
-    {
-      if !consolidated.is_empty() {
-        log::info!("Post-stop version consolidation results:");
-        for action in &consolidated {
-          log::info!("  {action}");
-        }
-      }
     }
 
     Ok(())
@@ -2410,15 +2207,6 @@ pub async fn launch_browser_profile_impl(
 }
 
 #[tauri::command]
-pub fn check_browser_exists(browser_str: String, version: String) -> bool {
-  // This is an alias for is_browser_downloaded to provide clearer semantics for auto-updates
-  let runner = BrowserRunner::instance();
-  runner
-    .downloaded_browsers_registry
-    .is_browser_downloaded(&browser_str, &version)
-}
-
-#[tauri::command]
 pub async fn kill_browser_profile(
   app_handle: tauri::AppHandle,
   profile: BrowserProfile,
@@ -2452,39 +2240,10 @@ pub async fn kill_browser_profile(
           .await;
       }
 
-      // Auto-update non-running profiles and cleanup unused binaries
-      let browser_for_update = profile.browser.clone();
-      let app_handle_for_update = app_handle.clone();
+      // Cleanup unused binaries after the browser exits. Automatic profile
+      // version updates are disabled for this fork.
       tauri::async_runtime::spawn(async move {
         let registry = crate::downloaded_browsers_registry::DownloadedBrowsersRegistry::instance();
-        let mut versions = registry.get_downloaded_versions(&browser_for_update);
-        if !versions.is_empty() {
-          versions.sort_by(|a, b| crate::api_client::compare_versions(b, a));
-          let latest_version = &versions[0];
-
-          let auto_updater = crate::auto_updater::AutoUpdater::instance();
-          match auto_updater
-            .auto_update_profile_versions(
-              &app_handle_for_update,
-              &browser_for_update,
-              latest_version,
-            )
-            .await
-          {
-            Ok(updated) => {
-              if !updated.is_empty() {
-                log::info!(
-                  "Auto-updated {} profiles after stop: {:?}",
-                  updated.len(),
-                  updated
-                );
-              }
-            }
-            Err(e) => {
-              log::error!("Failed to auto-update profile versions after stop: {e}");
-            }
-          }
-        }
 
         match registry.cleanup_unused_binaries() {
           Ok(cleaned) => {

@@ -96,7 +96,7 @@ impl Default for AppSettings {
       language: None,
       window_resize_warning_dismissed: false,
       onboarding_completed: false,
-      disable_auto_updates: false,
+      disable_auto_updates: true,
       keep_decrypted_profiles_in_ram: false,
     }
   }

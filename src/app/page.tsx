@@ -615,9 +615,9 @@ export default function Home() {
     [processingUrls],
   );
 
-  // Auto-update functionality - use the existing hook for compatibility
+  // Update state is kept for existing UI indicators; automatic checks are disabled.
   const updateNotifications = useUpdateNotifications();
-  const { checkForUpdates, isUpdating } = updateNotifications;
+  const { isUpdating } = updateNotifications;
 
   useAppUpdateNotifications();
 
@@ -1285,14 +1285,6 @@ export default function Home() {
     // Check for startup URLs (when app was launched as default browser)
     void checkCurrentUrl();
 
-    // Set up periodic update checks (every 30 minutes)
-    const updateInterval = setInterval(
-      () => {
-        void checkForUpdates();
-      },
-      30 * 60 * 1000,
-    );
-
     // Check for missing binaries after initial profile load
     if (!profilesLoading && profiles.length > 0) {
       void checkMissingBinaries();
@@ -1306,13 +1298,11 @@ export default function Home() {
     }
 
     return () => {
-      clearInterval(updateInterval);
       if (cleanup) {
         cleanup();
       }
     };
   }, [
-    checkForUpdates,
     listenForUrlEvents,
     checkCurrentUrl,
     checkMissingBinaries,

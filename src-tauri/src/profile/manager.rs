@@ -1554,8 +1554,6 @@ impl ProfileManager {
       };
 
       let mut merged = latest_profile.clone();
-      let mut detected_stop = false;
-
       if let Some(pid) = found_pid {
         if merged.process_id != Some(pid) {
           let old_pid = merged.process_id;
@@ -1573,15 +1571,6 @@ impl ProfileManager {
         if let Err(e) = self.save_profile(&merged) {
           log::warn!("Warning: Failed to clear profile PID: {e}");
         }
-        detected_stop = true;
-      }
-
-      if detected_stop {
-        if let Some(updated) = crate::auto_updater::AutoUpdater::instance()
-          .update_profile_to_latest_installed(&app_handle, &merged)
-        {
-          merged = updated;
-        }
       }
 
       // Emit profile update event to frontend
@@ -1596,7 +1585,7 @@ impl ProfileManager {
   // Check Camoufox status using CamoufoxManager
   async fn check_camoufox_status(
     &self,
-    app_handle: &tauri::AppHandle,
+    _app_handle: &tauri::AppHandle,
     profile: &BrowserProfile,
   ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let launcher = self.camoufox_manager;
@@ -1674,12 +1663,6 @@ impl ProfileManager {
               log::warn!("Warning: Failed to clear Camoufox profile process info: {e}");
             }
 
-            if let Some(updated) = crate::auto_updater::AutoUpdater::instance()
-              .update_profile_to_latest_installed(app_handle, &latest)
-            {
-              latest = updated;
-            }
-
             if let Err(e) = events::emit("profile-updated", &latest) {
               log::warn!("Warning: Failed to emit profile update event: {e}");
             }
@@ -1716,12 +1699,6 @@ impl ProfileManager {
               );
             }
 
-            if let Some(updated) = crate::auto_updater::AutoUpdater::instance()
-              .update_profile_to_latest_installed(app_handle, &latest)
-            {
-              latest = updated;
-            }
-
             // Emit profile update event to frontend
             if let Err(e3) = events::emit("profile-updated", &latest) {
               log::warn!("Warning: Failed to emit profile update event: {e3}");
@@ -1736,7 +1713,7 @@ impl ProfileManager {
   // Check Wayfern status using WayfernManager
   async fn check_wayfern_status(
     &self,
-    app_handle: &tauri::AppHandle,
+    _app_handle: &tauri::AppHandle,
     profile: &BrowserProfile,
   ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let manager = self.wayfern_manager;
@@ -1814,12 +1791,6 @@ impl ProfileManager {
               log::warn!("Warning: Failed to clear Wayfern profile process info: {e}");
             }
 
-            if let Some(updated) = crate::auto_updater::AutoUpdater::instance()
-              .update_profile_to_latest_installed(app_handle, &latest)
-            {
-              latest = updated;
-            }
-
             if let Err(e) = events::emit("profile-updated", &latest) {
               log::warn!("Warning: Failed to emit profile update event: {e}");
             }
@@ -1844,14 +1815,14 @@ impl ProfileManager {
       "user_pref(\"startup.homepage_welcome_url\", \"\");".to_string(),
       "user_pref(\"startup.homepage_welcome_url.additional\", \"\");".to_string(),
       "user_pref(\"startup.homepage_override_url\", \"\");".to_string(),
-      // Keep extension updates enabled and allow sideloaded extensions.
+      // Keep sideloaded extensions enabled without automatic extension updates.
       // - autoDisableScopes=0: profile-installed extensions are enabled by default.
       // - startupScanScopes=1: rescan SCOPE_PROFILE on each launch so freshly
       //   dropped .xpi files in <profile>/extensions/ get registered.
       // - signatures.required=false: accept unsigned/dev .xpi files. Camoufox
       //   is built without MOZ_REQUIRE_SIGNING so this is honored.
-      "user_pref(\"extensions.update.enabled\", true);".to_string(),
-      "user_pref(\"extensions.update.autoUpdateDefault\", true);".to_string(),
+      "user_pref(\"extensions.update.enabled\", false);".to_string(),
+      "user_pref(\"extensions.update.autoUpdateDefault\", false);".to_string(),
       "user_pref(\"extensions.autoDisableScopes\", 0);".to_string(),
       "user_pref(\"extensions.startupScanScopes\", 1);".to_string(),
       "user_pref(\"xpinstall.signatures.required\", false);".to_string(),

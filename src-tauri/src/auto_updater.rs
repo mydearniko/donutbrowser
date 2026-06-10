@@ -32,6 +32,7 @@ pub struct AutoUpdater {
   profile_manager: &'static ProfileManager,
 }
 
+#[allow(dead_code)]
 impl AutoUpdater {
   fn new() -> Self {
     Self {
@@ -112,116 +113,6 @@ impl AutoUpdater {
     }
 
     Ok(notifications)
-  }
-
-  pub async fn check_for_updates_with_progress(&self, app_handle: &tauri::AppHandle) {
-    log::info!("Starting auto-update check with progress...");
-
-    // Browser auto-updates are always enabled — the disable_auto_updates setting
-    // only controls app self-updates, not browser version updates.
-
-    // Check for browser updates and trigger auto-downloads
-    match self.check_for_updates().await {
-      Ok(update_notifications) => {
-        // Group by browser+version to avoid duplicate downloads
-        let grouped = self.group_update_notifications(update_notifications);
-        if !grouped.is_empty() {
-          log::info!("Found {} browser updates", grouped.len());
-
-          for notification in grouped {
-            log::info!(
-              "Auto-updating {} to version {} ({} profiles)",
-              notification.browser,
-              notification.new_version,
-              notification.affected_profiles.len()
-            );
-
-            let browser = notification.browser.clone();
-            let new_version = notification.new_version.clone();
-            let app_handle_clone = app_handle.clone();
-
-            // Spawn async task to handle the download and auto-update
-            tokio::spawn(async move {
-              let registry =
-                crate::downloaded_browsers_registry::DownloadedBrowsersRegistry::instance();
-
-              // Skip if this browser-version pair is already being downloaded
-              if crate::downloader::is_downloading(&browser, &new_version) {
-                log::info!(
-                  "Browser {browser} {new_version} is already being downloaded, skipping duplicate"
-                );
-                return;
-              }
-
-              if registry.is_browser_downloaded(&browser, &new_version) {
-                log::info!("Browser {browser} {new_version} already downloaded, proceeding to auto-update profiles");
-
-                // Browser already exists, go straight to profile update
-                match AutoUpdater::instance()
-                  .auto_update_profile_versions(&app_handle_clone, &browser, &new_version)
-                  .await
-                {
-                  Ok(updated_profiles) => {
-                    if !updated_profiles.is_empty() {
-                      log::info!(
-                        "Auto-updated {} profiles to {browser} {new_version}: {:?}",
-                        updated_profiles.len(),
-                        updated_profiles
-                      );
-                    }
-                  }
-                  Err(e) => {
-                    log::error!("Failed to auto-update profiles for {browser}: {e}");
-                  }
-                }
-              } else {
-                log::info!("Downloading browser {browser} version {new_version}...");
-
-                // Download directly from Rust — download_browser_full already
-                // auto-updates non-running profiles after successful download.
-                match crate::downloader::download_browser(
-                  app_handle_clone,
-                  browser.clone(),
-                  new_version.clone(),
-                )
-                .await
-                {
-                  Ok(actual_version) => {
-                    log::info!("Auto-download completed for {browser} {actual_version}");
-                  }
-                  Err(e) => {
-                    log::error!("Failed to auto-download {browser} {new_version}: {e}");
-                  }
-                }
-              }
-            });
-          }
-        } else {
-          log::info!("No browser updates needed");
-        }
-      }
-      Err(e) => {
-        log::error!("Failed to check for browser updates: {e}");
-      }
-    }
-
-    // Also update any profiles that can be bumped to an already-installed newer version.
-    // This handles cases where a version was downloaded but profiles weren't updated
-    // (e.g., they were running at the time, or the update was missed).
-    match self.update_profiles_to_latest_installed(app_handle) {
-      Ok(updated) => {
-        if !updated.is_empty() {
-          log::info!(
-            "Updated {} profiles to latest installed versions: {:?}",
-            updated.len(),
-            updated
-          );
-        }
-      }
-      Err(e) => {
-        log::error!("Failed to update profiles to latest installed versions: {e}");
-      }
-    }
   }
 
   /// Check if a specific profile has an available update
@@ -641,33 +532,6 @@ pub async fn check_for_browser_updates() -> Result<Vec<UpdateNotification>, Stri
     .map_err(|e| format!("Failed to check for updates: {e}"))?;
   let grouped = updater.group_update_notifications(notifications);
   Ok(grouped)
-}
-
-#[tauri::command]
-pub async fn dismiss_update_notification(notification_id: String) -> Result<(), String> {
-  let updater = AutoUpdater::instance();
-  updater
-    .dismiss_update_notification(&notification_id)
-    .map_err(|e| format!("Failed to dismiss notification: {e}"))
-}
-
-#[tauri::command]
-pub async fn complete_browser_update_with_auto_update(
-  app_handle: tauri::AppHandle,
-  browser: String,
-  new_version: String,
-) -> Result<Vec<String>, String> {
-  let updater = AutoUpdater::instance();
-  updater
-    .complete_browser_update_with_auto_update(&app_handle, &browser, &new_version)
-    .await
-    .map_err(|e| format!("Failed to complete browser update: {e}"))
-}
-
-#[tauri::command]
-pub async fn check_for_updates_with_progress(app_handle: tauri::AppHandle) {
-  let updater = AutoUpdater::instance();
-  updater.check_for_updates_with_progress(&app_handle).await;
 }
 
 #[cfg(test)]

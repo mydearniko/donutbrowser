@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::geoip_downloader::GeoIPDownloader;
-use crate::profile::{BrowserProfile, ProfileManager};
+use crate::profile::ProfileManager;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DownloadedBrowserInfo {
@@ -680,129 +680,12 @@ impl DownloadedBrowsersRegistry {
   /// Consolidate browser versions - keep only the latest version per browser
   pub fn consolidate_browser_versions(
     &self,
-    app_handle: &tauri::AppHandle,
+    _app_handle: &tauri::AppHandle,
   ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-    log::info!("Starting browser version consolidation...");
-
-    let profiles = self
-      .profile_manager
-      .list_profiles()
-      .map_err(|e| format!("Failed to list profiles: {e}"))?;
-
-    let binaries_dir = self.profile_manager.get_binaries_dir();
-    let mut consolidated = Vec::new();
-
-    // Group profiles by browser
-    let mut browser_profiles: std::collections::HashMap<String, Vec<&BrowserProfile>> =
-      std::collections::HashMap::new();
-    for profile in &profiles {
-      browser_profiles
-        .entry(profile.browser.clone())
-        .or_default()
-        .push(profile);
-    }
-
-    for (browser_name, browser_profiles) in browser_profiles.iter() {
-      // Find the latest version among all profiles for this browser that actually exists on disk
-      let mut available_versions: Vec<String> = Vec::new();
-
-      for profile in browser_profiles {
-        // Only consider versions that actually exist on disk
-        let browser_type = match crate::browser::BrowserType::from_str(browser_name) {
-          Ok(bt) => bt,
-          Err(_) => continue,
-        };
-        let browser = crate::browser::create_browser(browser_type.clone());
-
-        if browser.is_version_downloaded(&profile.version, &binaries_dir) {
-          available_versions.push(profile.version.clone());
-        } else {
-          log::info!(
-            "Profile '{}' references version {} that doesn't exist on disk",
-            profile.name,
-            profile.version
-          );
-        }
-      }
-
-      if available_versions.is_empty() {
-        log::info!("No available versions found for {browser_name}, skipping consolidation");
-        continue;
-      }
-
-      // Sort available versions to find the latest
-      available_versions.sort_by(|a, b| {
-        // Sort versions using semantic versioning logic
-        crate::api_client::compare_versions(b, a)
-      });
-
-      let latest_version = &available_versions[0];
-      log::info!("Latest available version for {browser_name}: {latest_version}");
-
-      // Check which profiles need to be updated to the latest version
-      let mut profiles_to_update = Vec::new();
-      let mut older_versions_to_remove = std::collections::HashSet::<String>::new();
-
-      for profile in browser_profiles {
-        if profile.version != *latest_version {
-          // Only update if profile is not currently running
-          if profile.process_id.is_none() {
-            profiles_to_update.push(profile);
-            older_versions_to_remove.insert(profile.version.clone());
-          } else {
-            log::info!(
-              "Skipping version update for running profile: {} ({})",
-              profile.name,
-              profile.version
-            );
-          }
-        }
-
-        // Update profiles to latest version
-        for profile in &profiles_to_update {
-          match self.profile_manager.update_profile_version(
-            app_handle,
-            &profile.id.to_string(),
-            latest_version,
-          ) {
-            Ok(_) => {
-              consolidated.push(format!(
-                "Updated profile '{}' from {} to {}",
-                profile.name, profile.version, latest_version
-              ));
-            }
-            Err(e) => {
-              log::error!("Failed to update profile '{}': {}", profile.name, e);
-            }
-          }
-        }
-
-        // Remove older version binaries that are no longer needed
-        for old_version in &older_versions_to_remove {
-          log::info!("Consolidating: removing old version {browser_name} {old_version}");
-          match self.cleanup_failed_download(browser_name, old_version) {
-            Ok(_) => {
-              consolidated.push(format!("Removed old version: {browser_name} {old_version}"));
-              log::info!("Successfully removed old version: {browser_name} {old_version}");
-            }
-            Err(e) => {
-              log::error!("Failed to cleanup old version {browser_name} {old_version}: {e}");
-            }
-          }
-        }
-      }
-    }
-
-    // Save registry after consolidation
-    self
-      .save()
-      .map_err(|e| format!("Failed to save registry after consolidation: {e}"))?;
-
     log::info!(
-      "Browser version consolidation completed: {} actions taken",
-      consolidated.len()
+      "Browser version consolidation skipped because auto-updates are disabled for this fork"
     );
-    Ok(consolidated)
+    Ok(Vec::new())
   }
 
   /// Check if browser binaries exist for all profiles and return missing binaries
