@@ -108,6 +108,12 @@
     }
   },
   "settings": {
+    "browserWindow": {
+      "title": "Tamanho da janela do navegador",
+      "description": "Tamanho padrão das janelas do navegador ao iniciar. Deixe em branco para usar o padrão (~1211×710). Aplicado no próximo início.",
+      "width": "Largura",
+      "height": "Altura"
+    },
     "title": "Configurações",
     "appearance": {
       "title": "Aparência",
@@ -197,16 +203,7 @@
     "disableAutoUpdates": "Desativar Atualizações Automáticas do App",
     "disableAutoUpdatesDescription": "Impede que o aplicativo verifique e instale atualizações do Donut Browser automaticamente. As atualizações de navegadores não são afetadas.",
     "keepDecryptedProfilesInRam": "Manter Perfis Descriptografados na RAM",
-    "keepDecryptedProfilesInRamDescription": "Preserva a cópia descriptografada na RAM dos perfis protegidos por senha entre execuções para um início mais rápido. A cópia em disco permanece criptografada em qualquer caso.",
-    "windowSize": {
-      "title": "Tamanho da janela",
-      "description": "Limite o tamanho mínimo ou máximo da janela principal. Deixe um campo vazio para manter o padrão (mínimo 640×400, sem máximo).",
-      "minWidth": "Largura mínima",
-      "minHeight": "Altura mínima",
-      "maxWidth": "Largura máxima",
-      "maxHeight": "Altura máxima",
-      "unlimited": "Sem limite"
-    }
+    "keepDecryptedProfilesInRamDescription": "Preserva a cópia descriptografada na RAM dos perfis protegidos por senha entre execuções para um início mais rápido. A cópia em disco permanece criptografada em qualquer caso."
   },
   "header": {
     "searchPlaceholder": "Pesquisar perfis...",

@@ -343,7 +343,28 @@ impl WayfernManager {
     }
   }
 
-  fn window_launch_config(app_handle: &AppHandle, sequence: u64) -> Option<WindowLaunchConfig> {
+  /// The user-configured default browser-window size from Settings, when
+  /// both dimensions are set and non-zero.
+  fn configured_browser_window_size() -> Option<(u32, u32)> {
+    crate::settings_manager::SettingsManager::instance()
+      .load_settings()
+      .ok()
+      .and_then(|settings| {
+        match (
+          settings.browser_window_width,
+          settings.browser_window_height,
+        ) {
+          (Some(width), Some(height)) if width > 0 && height > 0 => Some((width, height)),
+          _ => None,
+        }
+      })
+  }
+
+  fn window_launch_config(
+    app_handle: &AppHandle,
+    sequence: u64,
+    desired_size: (u32, u32),
+  ) -> Option<WindowLaunchConfig> {
     let monitor = app_handle
       .get_webview_window("main")
       .and_then(|window| window.current_monitor().ok().flatten())
@@ -371,7 +392,6 @@ impl WayfernManager {
       monitor.size().height,
       scale_factor,
     )?;
-    let desired_size = Self::random_default_window_size();
     let window_size = Self::fit_window_size_to_work_area(logical_work_area, desired_size);
     let offset = Self::cascade_offset(
       sequence,
@@ -1261,11 +1281,18 @@ impl WayfernManager {
 
     let mut args = Self::profile_launch_args(port, profile_path);
 
+    // Default browser-window size: the user-configured value from Settings
+    // (when both dimensions are set), otherwise a random size from the
+    // built-in range. Used for every non-headless launch so windows are a
+    // consistent, expected size.
+    let desired_default_size =
+      Self::configured_browser_window_size().unwrap_or_else(Self::random_default_window_size);
+
     let window_launch_config = if headless {
       None
     } else {
       let sequence = self.placement_sequence.fetch_add(1, Ordering::Relaxed);
-      Self::window_launch_config(app_handle, sequence)
+      Self::window_launch_config(app_handle, sequence, desired_default_size)
     };
 
     if headless {
@@ -1300,7 +1327,7 @@ impl WayfernManager {
         launch.scale_factor
       ));
     } else {
-      let (width, height) = Self::random_default_window_size();
+      let (width, height) = desired_default_size;
       log::warn!(
         "Could not determine a monitor work area; letting the OS position the {width}x{height} Wayfern window"
       );

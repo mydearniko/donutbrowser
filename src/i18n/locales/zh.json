@@ -108,6 +108,12 @@
     }
   },
   "settings": {
+    "browserWindow": {
+      "title": "浏览器窗口大小",
+      "description": "启动浏览器窗口的默认尺寸。留空则使用默认值（约1211×710）。下次启动时生效。",
+      "width": "宽度",
+      "height": "高度"
+    },
     "title": "设置",
     "appearance": {
       "title": "外观",
@@ -197,16 +203,7 @@
     "disableAutoUpdates": "禁用应用自动更新",
     "disableAutoUpdatesDescription": "阻止应用程序自动检查和安装 Donut Browser 更新。浏览器更新不受影响。",
     "keepDecryptedProfilesInRam": "在内存中保留已解密的配置文件",
-    "keepDecryptedProfilesInRamDescription": "在启动之间保留密码保护配置文件的已解密内存副本,以便更快地启动。无论如何磁盘上的副本始终保持加密。",
-    "windowSize": {
-      "title": "窗口大小",
-      "description": "限制主窗口的最小和最大尺寸。留空则保持默认值（最小 640×400，无上限）。",
-      "minWidth": "最小宽度",
-      "minHeight": "最小高度",
-      "maxWidth": "最大宽度",
-      "maxHeight": "最大高度",
-      "unlimited": "无限制"
-    }
+    "keepDecryptedProfilesInRamDescription": "在启动之间保留密码保护配置文件的已解密内存副本,以便更快地启动。无论如何磁盘上的副本始终保持加密。"
   },
   "header": {
     "searchPlaceholder": "搜索配置文件...",

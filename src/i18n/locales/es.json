@@ -108,6 +108,12 @@
     }
   },
   "settings": {
+    "browserWindow": {
+      "title": "Tamaño de ventana del navegador",
+      "description": "Tamaño predeterminado de las ventanas del navegador al abrir. Déjalo vacío para usar el valor por defecto (~1211×710). Se aplica en el siguiente inicio.",
+      "width": "Ancho",
+      "height": "Alto"
+    },
     "title": "Configuración",
     "appearance": {
       "title": "Apariencia",
@@ -197,16 +203,7 @@
     "disableAutoUpdates": "Desactivar Actualizaciones Automáticas de la App",
     "disableAutoUpdatesDescription": "Evita que la aplicación busque e instale actualizaciones de Donut Browser automáticamente. Las actualizaciones de navegadores no se ven afectadas.",
     "keepDecryptedProfilesInRam": "Mantener Perfiles Descifrados en RAM",
-    "keepDecryptedProfilesInRamDescription": "Conservar la copia descifrada en RAM de los perfiles protegidos por contraseña entre lanzamientos para un inicio más rápido. La copia en disco permanece cifrada en cualquier caso.",
-    "windowSize": {
-      "title": "Tamaño de ventana",
-      "description": "Limita lo pequeña o grande que puede ser la ventana principal. Deja un campo vacío para mantener el valor predeterminado (mínimo 640×400, sin máximo).",
-      "minWidth": "Ancho mínimo",
-      "minHeight": "Alto mínimo",
-      "maxWidth": "Ancho máximo",
-      "maxHeight": "Alto máximo",
-      "unlimited": "Sin límite"
-    }
+    "keepDecryptedProfilesInRamDescription": "Conservar la copia descifrada en RAM de los perfiles protegidos por contraseña entre lanzamientos para un inicio más rápido. La copia en disco permanece cifrada en cualquier caso."
   },
   "header": {
     "searchPlaceholder": "Buscar perfiles...",
