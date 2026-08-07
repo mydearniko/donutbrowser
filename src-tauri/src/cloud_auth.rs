@@ -760,8 +760,8 @@ impl CloudAuthManager {
     state.as_ref().map(|auth| auth.user.entitlements())
   }
 
-  /// Account is in a paid/active state. Used for the "any active plan" gates
-  /// (sync token, wayfern token); per-feature access uses the capability helpers.
+  /// Account is in a paid/active state. Used for hosted services such as cloud
+  /// sync, Wayfern tokens, and team locks.
   pub async fn has_active_paid_subscription(&self) -> bool {
     self.entitlements().await.map(|e| e.active).unwrap_or(false)
   }
@@ -775,24 +775,6 @@ impl CloudAuthManager {
         .unwrap_or(false),
       Err(_) => false,
     }
-  }
-
-  /// Launch/drive profiles programmatically (local API + MCP automation).
-  pub async fn can_use_browser_automation(&self) -> bool {
-    self
-      .entitlements()
-      .await
-      .map(|e| e.browser_automation)
-      .unwrap_or(false)
-  }
-
-  /// Edit fingerprints / use a non-native OS fingerprint.
-  pub async fn can_use_cross_os_fingerprints(&self) -> bool {
-    self
-      .entitlements()
-      .await
-      .map(|e| e.cross_os_fingerprints)
-      .unwrap_or(false)
   }
 
   /// Cloud profile sync / backup (async).
@@ -812,25 +794,6 @@ impl CloudAuthManager {
         .map(|auth| auth.user.entitlements().cloud_backup)
         .unwrap_or(false),
       Err(_) => false,
-    }
-  }
-
-  /// Per-hour cap on automation requests (0 when automation is unavailable).
-  /// Carried for the future local rate limiter; read by the inert chokepoints.
-  pub async fn requests_per_hour(&self) -> i64 {
-    self
-      .entitlements()
-      .await
-      .map(|e| e.requests_per_hour)
-      .unwrap_or(0)
-  }
-
-  pub async fn is_fingerprint_os_allowed(&self, fingerprint_os: Option<&str>) -> bool {
-    let host_os = crate::profile::types::get_host_os();
-    match fingerprint_os {
-      None => true,
-      Some(os) if os == host_os => true,
-      Some(_) => self.can_use_cross_os_fingerprints().await,
     }
   }
 
@@ -1417,6 +1380,7 @@ pub async fn cloud_logout(app_handle: tauri::AppHandle) -> Result<(), String> {
   let manager = crate::settings_manager::SettingsManager::instance();
   let _ = manager.save_sync_server_url(None);
   let _ = manager.remove_sync_token(&app_handle).await;
+  let _ = manager.save_default_profile_sync_mode(crate::profile::types::SyncMode::Disabled);
 
   // Remove cloud-managed and cloud-derived proxies
   crate::proxy_manager::PROXY_MANAGER.remove_cloud_proxies();

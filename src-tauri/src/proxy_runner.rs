@@ -329,19 +329,9 @@ pub async fn start_proxy_process_with_profile(
     drop(child);
   }
 
-  // Give the process a moment to start up before checking
-  tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-  // Wait for the worker to bind to the port and update config
-  // Since we pre-allocated the port, the worker should bind immediately
-  // We check quickly with short intervals to make startup fast
-  let mut attempts = 0;
-  let max_attempts = 40; // 4 seconds max (40 * 100ms) - give it more time to start
-
+  let started = tokio::time::Instant::now();
+  let deadline = started + tokio::time::Duration::from_secs(4);
   loop {
-    // Use shorter sleep for faster startup
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
     if let Some(updated_config) = get_proxy_config(&id) {
       // Check if local_url is set (worker has bound and updated config)
       if let Some(ref local_url) = updated_config.local_url {
@@ -367,8 +357,7 @@ pub async fn start_proxy_process_with_profile(
       }
     }
 
-    attempts += 1;
-    if attempts >= max_attempts {
+    if tokio::time::Instant::now() >= deadline {
       // Try to get the config one more time for better error message
       if let Some(config) = get_proxy_config(&id) {
         // Check if process is still running
@@ -389,6 +378,13 @@ pub async fn start_proxy_process_with_profile(
         .into(),
       );
     }
+
+    let delay = if started.elapsed() < tokio::time::Duration::from_millis(750) {
+      tokio::time::Duration::from_millis(10)
+    } else {
+      tokio::time::Duration::from_millis(50)
+    };
+    tokio::time::sleep(delay).await;
   }
 }
 
@@ -417,8 +413,13 @@ pub async fn stop_proxy_process(id: &str) -> Result<bool, Box<dyn std::error::Er
           .output();
       }
 
-      // Wait a bit for the process to exit
-      tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+      let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(500);
+      while is_process_running(pid) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+      }
+      if is_process_running(pid) {
+        return Err(format!("Proxy worker {pid} did not exit after termination").into());
+      }
 
       // Remove from tracking
       {

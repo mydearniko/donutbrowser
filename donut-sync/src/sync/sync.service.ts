@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import type { Readable } from "node:stream";
 import {
   CreateBucketCommand,
   DeleteObjectCommand,
@@ -20,10 +21,27 @@ import {
   type OnModuleInit,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { interval, merge, type Observable, of, Subject } from "rxjs";
-import { catchError, filter, map, startWith, switchMap } from "rxjs/operators";
+import {
+  defer,
+  from,
+  interval,
+  merge,
+  type Observable,
+  of,
+  Subject,
+} from "rxjs";
+import {
+  catchError,
+  filter,
+  map,
+  mergeMap,
+  startWith,
+  switchMap,
+} from "rxjs/operators";
 import type { UserContext } from "../auth/user-context.interface.js";
 import type {
+  BulkDownloadRequestDto,
+  BulkTransferResponseDto,
   DeletePrefixRequestDto,
   DeletePrefixResponseDto,
   DeleteRequestDto,
@@ -41,7 +59,14 @@ import type {
   StatRequestDto,
   StatResponseDto,
   SubscribeEventDto,
+  SyncCapabilitiesResponseDto,
 } from "./dto/sync.dto.js";
+import {
+  type LocalObjectInfo,
+  LocalObjectStore,
+  MAX_BUNDLE_BYTES,
+  MAX_BUNDLE_ITEMS,
+} from "./local-object-store.js";
 
 /**
  * Marker object written under each scope (user / team / self-hosted root).
@@ -59,14 +84,26 @@ const MANIFEST_KEY = ".donut-sync-manifest";
  * outlives this, regardless of a (possibly hostile) client-supplied expiresIn. */
 const MAX_PRESIGN_EXPIRES_IN = 3600;
 
+type StorageDriver = "local" | "s3";
+
+interface LocalTransferTicket {
+  v: 1;
+  operation: "upload" | "download";
+  key: string;
+  expiresAt: number;
+  contentType?: string;
+  metadata?: Record<string, string>;
+  sourceId?: string;
+}
+
 /** Clamp a client-supplied expiresIn to a sane positive range. */
 function clampExpiresIn(requested: number | undefined): number {
   const v = typeof requested === "number" && requested > 0 ? requested : 3600;
   return Math.min(v, MAX_PRESIGN_EXPIRES_IN);
 }
 
-/** Only this metadata key is meaningful to sync (LWW conflict resolution).
- * Whitelisting prevents a client from signing arbitrary x-amz-meta-* values. */
+/** Only metadata used by sync reconciliation is accepted. Whitelisting prevents
+ * a client from signing arbitrary x-amz-meta-* values. */
 function sanitizeMetadata(
   metadata: Record<string, string> | undefined,
 ): Record<string, string> | undefined {
@@ -75,26 +112,30 @@ function sanitizeMetadata(
   if (typeof metadata["updated-at"] === "string") {
     out["updated-at"] = metadata["updated-at"];
   }
+  if (typeof metadata["manifest-hash"] === "string") {
+    out["manifest-hash"] = metadata["manifest-hash"];
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
 @Injectable()
 export class SyncService implements OnModuleInit {
   private readonly logger = new Logger(SyncService.name);
-  private s3Client: S3Client;
-  private bucket: string;
+  private readonly storageDriver: StorageDriver;
+  private readonly localStore: LocalObjectStore | null;
+  private readonly publicUrl: string | undefined;
+  private readonly transferSecret: string;
+  private s3Client!: S3Client;
+  private bucket = "";
   // Upper bound on presign batch array length (DoS guard).
   private static readonly MAX_BATCH_ITEMS = 1000;
 
-  private changeSubject = new Subject<SubscribeEventDto>();
-  private s3Ready = false;
+  private readonly changeSubject = new Subject<SubscribeEventDto>();
+  private storageReady = false;
   private backendInternalUrl: string | undefined;
   private backendInternalKey: string | undefined;
 
   constructor(private configService: ConfigService) {
-    // Fail fast instead of silently falling back to insecure local dev defaults
-    // (localhost / minioadmin) — a misconfigured server must not start pointed
-    // at an unintended or public-default S3 backend.
     const requireEnv = (name: string): string => {
       const value = this.configService.get<string>(name);
       if (!value) {
@@ -103,24 +144,47 @@ export class SyncService implements OnModuleInit {
       return value;
     };
 
-    const endpoint = requireEnv("S3_ENDPOINT");
-    const region = this.configService.get<string>("S3_REGION") || "us-east-1";
-    const accessKeyId = requireEnv("S3_ACCESS_KEY_ID");
-    const secretAccessKey = requireEnv("S3_SECRET_ACCESS_KEY");
-    const forcePathStyle =
-      this.configService.get<string>("S3_FORCE_PATH_STYLE") !== "false";
+    const requestedDriver = this.configService
+      .get<string>("STORAGE_DRIVER")
+      ?.toLowerCase();
+    this.storageDriver =
+      requestedDriver === "s3" ||
+      (!requestedDriver && Boolean(this.configService.get("S3_ENDPOINT")))
+        ? "s3"
+        : "local";
+    this.publicUrl = this.configService
+      .get<string>("PUBLIC_URL")
+      ?.replace(/\/$/, "");
+    this.transferSecret =
+      this.configService.get<string>("LOCAL_TRANSFER_SECRET") ||
+      this.configService.get<string>("SYNC_TOKEN") ||
+      "";
 
-    this.bucket = requireEnv("S3_BUCKET");
-
-    this.s3Client = new S3Client({
-      endpoint,
-      region,
-      credentials: {
-        accessKeyId,
-        secretAccessKey,
-      },
-      forcePathStyle,
-    });
+    if (this.storageDriver === "local") {
+      if (!this.transferSecret) {
+        throw new Error(
+          "LOCAL_TRANSFER_SECRET or SYNC_TOKEN must be set for local storage",
+        );
+      }
+      this.localStore = new LocalObjectStore(
+        this.configService.get<string>("DATA_DIR") || "/data",
+      );
+    } else {
+      this.localStore = null;
+      const endpoint = requireEnv("S3_ENDPOINT");
+      const region = this.configService.get<string>("S3_REGION") || "us-east-1";
+      const accessKeyId = requireEnv("S3_ACCESS_KEY_ID");
+      const secretAccessKey = requireEnv("S3_SECRET_ACCESS_KEY");
+      const forcePathStyle =
+        this.configService.get<string>("S3_FORCE_PATH_STYLE") !== "false";
+      this.bucket = requireEnv("S3_BUCKET");
+      this.s3Client = new S3Client({
+        endpoint,
+        region,
+        credentials: { accessKeyId, secretAccessKey },
+        forcePathStyle,
+      });
+    }
 
     this.backendInternalUrl = this.configService.get<string>(
       "BACKEND_INTERNAL_URL",
@@ -131,13 +195,21 @@ export class SyncService implements OnModuleInit {
   }
 
   async onModuleInit() {
-    await this.ensureBucketExists();
+    if (this.localStore) {
+      await this.localStore.initialize();
+      this.storageReady = true;
+      this.logger.log(
+        `Local object storage ready at ${this.localStore.dataDirectory}`,
+      );
+    } else {
+      await this.ensureBucketExists();
+    }
   }
 
   private async ensureBucketExists(): Promise<void> {
     try {
       await this.s3Client.send(new HeadBucketCommand({ Bucket: this.bucket }));
-      this.s3Ready = true;
+      this.storageReady = true;
     } catch (error: unknown) {
       const isNotFound =
         error &&
@@ -152,7 +224,7 @@ export class SyncService implements OnModuleInit {
           await this.s3Client.send(
             new CreateBucketCommand({ Bucket: this.bucket }),
           );
-          this.s3Ready = true;
+          this.storageReady = true;
         } catch (createError: unknown) {
           // BucketAlreadyOwnedByYou means the bucket exists and we own it - this is fine
           const isAlreadyOwned =
@@ -161,7 +233,7 @@ export class SyncService implements OnModuleInit {
             "name" in createError &&
             createError.name === "BucketAlreadyOwnedByYou";
           if (isAlreadyOwned) {
-            this.s3Ready = true;
+            this.storageReady = true;
           } else {
             console.error("Failed to create S3 bucket:", createError);
             throw createError;
@@ -175,16 +247,213 @@ export class SyncService implements OnModuleInit {
   }
 
   isReady(): boolean {
-    return this.s3Ready;
+    return this.storageReady;
   }
 
-  async checkS3Connectivity(): Promise<boolean> {
+  getStorageDriver(): StorageDriver {
+    return this.storageDriver;
+  }
+
+  getCapabilities(): SyncCapabilitiesResponseDto {
+    return {
+      bulkTransfer: this.localStore !== null,
+      profileIndex: this.localStore !== null,
+      maxBundleItems: MAX_BUNDLE_ITEMS,
+      maxBundleBytes: MAX_BUNDLE_BYTES,
+    };
+  }
+
+  async checkStorageConnectivity(): Promise<boolean> {
+    if (this.localStore) return this.localStore.checkConnectivity();
     try {
       await this.s3Client.send(new HeadBucketCommand({ Bucket: this.bucket }));
       return true;
     } catch {
       return false;
     }
+  }
+
+  async checkS3Connectivity(): Promise<boolean> {
+    return this.checkStorageConnectivity();
+  }
+
+  async listProfileManifests(
+    prefix: string,
+    ctx: UserContext,
+  ): Promise<ListResponseDto> {
+    const scopedPrefix = this.scopeKey(ctx, prefix);
+    this.validateKeyAccess(ctx, scopedPrefix);
+    if (!this.localStore) {
+      return this.list({ prefix }, ctx);
+    }
+    const userPrefix = ctx.mode === "self-hosted" ? "" : ctx.prefix;
+    const objects = await this.localStore.listProfileManifests(scopedPrefix);
+    return {
+      objects: objects.map((object) => ({
+        key:
+          userPrefix && object.key.startsWith(userPrefix)
+            ? object.key.slice(userPrefix.length)
+            : object.key,
+        lastModified: object.lastModified,
+        size: object.size,
+      })),
+      isTruncated: false,
+    };
+  }
+
+  resolvePublicUrl(requestOrigin: string): string {
+    return this.publicUrl || requestOrigin.replace(/\/$/, "");
+  }
+
+  private requireLocalStore(): LocalObjectStore {
+    if (!this.localStore) {
+      throw new BadRequestException("Local object storage is not enabled");
+    }
+    return this.localStore;
+  }
+
+  private createLocalTicket(ticket: Omit<LocalTransferTicket, "v">): string {
+    const payload = Buffer.from(
+      JSON.stringify({ v: 1, ...ticket } satisfies LocalTransferTicket),
+    ).toString("base64url");
+    const signature = createHmac("sha256", this.transferSecret)
+      .update(payload)
+      .digest("base64url");
+    return `${payload}.${signature}`;
+  }
+
+  private verifyLocalTicket(
+    rawTicket: string,
+    expectedOperation: LocalTransferTicket["operation"],
+  ): LocalTransferTicket {
+    const [payload, suppliedSignature, extra] = rawTicket.split(".");
+    if (!payload || !suppliedSignature || extra) {
+      throw new ForbiddenException("Invalid transfer ticket");
+    }
+    const expectedSignature = createHmac("sha256", this.transferSecret)
+      .update(payload)
+      .digest("base64url");
+    const supplied = Buffer.from(suppliedSignature);
+    const expected = Buffer.from(expectedSignature);
+    if (
+      supplied.length !== expected.length ||
+      !timingSafeEqual(supplied, expected)
+    ) {
+      throw new ForbiddenException("Invalid transfer ticket");
+    }
+
+    let ticket: LocalTransferTicket;
+    try {
+      ticket = JSON.parse(
+        Buffer.from(payload, "base64url").toString("utf8"),
+      ) as LocalTransferTicket;
+    } catch {
+      throw new ForbiddenException("Invalid transfer ticket");
+    }
+    if (
+      ticket.v !== 1 ||
+      ticket.operation !== expectedOperation ||
+      !Number.isFinite(ticket.expiresAt) ||
+      ticket.expiresAt < Date.now()
+    ) {
+      throw new ForbiddenException("Expired or invalid transfer ticket");
+    }
+    this.requireLocalStore().validateKey(ticket.key);
+    return ticket;
+  }
+
+  private localTransferUrl(
+    operation: LocalTransferTicket["operation"],
+    key: string,
+    expiresIn: number,
+    requestOrigin: string,
+    contentType?: string,
+    metadata?: Record<string, string>,
+    sourceId?: string,
+  ): string {
+    const ticket = this.createLocalTicket({
+      operation,
+      key,
+      expiresAt: Date.now() + expiresIn * 1000,
+      contentType,
+      metadata,
+      sourceId,
+    });
+    return `${this.resolvePublicUrl(requestOrigin)}/v1/storage/${operation}?ticket=${encodeURIComponent(ticket)}`;
+  }
+
+  async acceptLocalUpload(rawTicket: string, input: Readable): Promise<void> {
+    const ticket = this.verifyLocalTicket(rawTicket, "upload");
+    const isProfileFile = /(?:^|\/)profiles\/[^/]+\/files\/.+/.test(ticket.key);
+    const info = await this.requireLocalStore().putStream(
+      ticket.key,
+      input,
+      isProfileFile ? undefined : ticket.contentType,
+      isProfileFile ? undefined : ticket.metadata,
+      isProfileFile ? undefined : ticket.sourceId,
+    );
+    this.publishObjectChange("change", info, ticket.sourceId);
+  }
+
+  async acceptBulkUpload(
+    prefix: string,
+    input: Readable,
+    ctx: UserContext,
+  ): Promise<BulkTransferResponseDto> {
+    const scopedPrefix = this.scopeKey(ctx, prefix);
+    this.validateKeyAccess(ctx, scopedPrefix);
+    return this.requireLocalStore().putTarGzipBundle(scopedPrefix, input);
+  }
+
+  async createBulkDownload(
+    dto: BulkDownloadRequestDto,
+    ctx: UserContext,
+  ): Promise<Readable> {
+    const scopedPrefix = this.scopeKey(ctx, dto.prefix);
+    this.validateKeyAccess(ctx, scopedPrefix);
+    return this.requireLocalStore().createTarGzipBundle(
+      scopedPrefix,
+      dto.paths,
+    );
+  }
+
+  async resolveLocalDownload(rawTicket: string): Promise<{
+    stream: Readable;
+    size: number;
+    contentType: string;
+  }> {
+    const ticket = this.verifyLocalTicket(rawTicket, "download");
+    return this.requireLocalStore().getDownload(ticket.key);
+  }
+
+  private shouldPublishKey(key: string): boolean {
+    const unscoped = key
+      .replace(/^users\/[^/]+\//, "")
+      .replace(/^teams\/[^/]+\//, "");
+    if (unscoped.startsWith("tombstones/")) return true;
+    if (/^profiles\/[^/]+\/(manifest|metadata)\.json$/.test(unscoped)) {
+      return true;
+    }
+    if (/^profiles\/[^/]+\.tar\.gz$/.test(unscoped)) return true;
+    return (
+      /^(proxies|groups|vpns|extension_groups)\/[^/]+\.json$/.test(unscoped) ||
+      /^extensions\/[^/]+\.json$/.test(unscoped)
+    );
+  }
+
+  private publishObjectChange(
+    type: "change" | "delete",
+    object: Pick<LocalObjectInfo, "key" | "lastModified" | "size">,
+    sourceId?: string,
+  ): void {
+    if (!this.shouldPublishKey(object.key)) return;
+    this.changeSubject.next({
+      type,
+      key: object.key,
+      lastModified: object.lastModified,
+      size: object.size,
+      sourceId,
+    });
   }
 
   /**
@@ -219,6 +488,7 @@ export class SyncService implements OnModuleInit {
     ctx: UserContext,
     scopedKey: string,
   ): Promise<void> {
+    if (this.localStore) return;
     const scope = this.scopeForKey(ctx, scopedKey);
     if (scope === null) return;
     const key = `${scope}${MANIFEST_KEY}`;
@@ -272,6 +542,18 @@ export class SyncService implements OnModuleInit {
     const key = this.scopeKey(ctx, dto.key);
     this.validateKeyAccess(ctx, key);
 
+    if (this.localStore) {
+      const info = await this.localStore.head(key);
+      return info
+        ? {
+            exists: true,
+            lastModified: info.lastModified,
+            size: info.size,
+            metadata: info.metadata,
+          }
+        : { exists: false };
+    }
+
     try {
       const response = await this.s3Client.send(
         new HeadObjectCommand({
@@ -305,6 +587,8 @@ export class SyncService implements OnModuleInit {
   async presignUpload(
     dto: PresignUploadRequestDto,
     ctx: UserContext,
+    requestOrigin = "http://localhost:3929",
+    sourceId?: string,
   ): Promise<PresignUploadResponseDto> {
     const key = this.scopeKey(ctx, dto.key);
     this.validateKeyAccess(ctx, key);
@@ -317,9 +601,27 @@ export class SyncService implements OnModuleInit {
     const expiresIn = clampExpiresIn(dto.expiresIn);
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
 
-    // Whitelist metadata to the single key sync relies on, so a client can't
-    // sign arbitrary x-amz-meta-* values into its objects.
+    // Whitelist sync metadata so a client can't sign arbitrary x-amz-meta-*
+    // values into its objects.
     const metadata = sanitizeMetadata(dto.metadata);
+
+    if (this.localStore) {
+      this.localStore.validateKey(key);
+      return {
+        url: this.localTransferUrl(
+          "upload",
+          key,
+          expiresIn,
+          requestOrigin,
+          dto.contentType || "application/octet-stream",
+          metadata,
+          sourceId,
+        ),
+        expiresAt: expiresAt.toISOString(),
+        metadata,
+      };
+    }
+
     const command = new PutCmd({
       Bucket: this.bucket,
       Key: key,
@@ -353,12 +655,21 @@ export class SyncService implements OnModuleInit {
   async presignDownload(
     dto: PresignDownloadRequestDto,
     ctx: UserContext,
+    requestOrigin = "http://localhost:3929",
   ): Promise<PresignDownloadResponseDto> {
     const key = this.scopeKey(ctx, dto.key);
     this.validateKeyAccess(ctx, key);
 
     const expiresIn = clampExpiresIn(dto.expiresIn);
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
+
+    if (this.localStore) {
+      this.localStore.validateKey(key);
+      return {
+        url: this.localTransferUrl("download", key, expiresIn, requestOrigin),
+        expiresAt: expiresAt.toISOString(),
+      };
+    }
 
     const command = new GetObjectCommand({
       Bucket: this.bucket,
@@ -376,12 +687,39 @@ export class SyncService implements OnModuleInit {
   async delete(
     dto: DeleteRequestDto,
     ctx: UserContext,
+    sourceId?: string,
   ): Promise<DeleteResponseDto> {
     const key = this.scopeKey(ctx, dto.key);
     this.validateKeyAccess(ctx, key);
 
     let deleted = false;
     let tombstoneCreated = false;
+
+    if (this.localStore) {
+      const previous = await this.localStore.head(key);
+      deleted = await this.localStore.delete(key);
+
+      if (dto.tombstoneKey) {
+        const scopedTombstoneKey = this.scopeKey(ctx, dto.tombstoneKey);
+        this.validateKeyAccess(ctx, scopedTombstoneKey);
+        const tombstone = await this.localStore.putBuffer(
+          scopedTombstoneKey,
+          JSON.stringify({
+            id: key,
+            deleted_at: dto.deletedAt || new Date().toISOString(),
+          }),
+          "application/json",
+          undefined,
+          sourceId,
+        );
+        tombstoneCreated = true;
+        this.publishObjectChange("change", tombstone, sourceId);
+      } else if (deleted && previous) {
+        this.publishObjectChange("delete", previous, sourceId);
+      }
+
+      return { deleted, tombstoneCreated };
+    }
 
     try {
       await this.s3Client.send(
@@ -431,6 +769,29 @@ export class SyncService implements OnModuleInit {
     // enumerate another tenant's objects.
     if (ctx) this.validateKeyAccess(ctx, prefix);
 
+    if (this.localStore) {
+      const response = await this.localStore.list(
+        prefix,
+        dto.maxKeys || 1000,
+        dto.continuationToken,
+      );
+      const userPrefix = ctx?.prefix || "";
+      return {
+        objects: response.objects
+          .filter((object) => !object.key.endsWith(MANIFEST_KEY))
+          .map((object) => ({
+            key:
+              userPrefix && object.key.startsWith(userPrefix)
+                ? object.key.slice(userPrefix.length)
+                : object.key,
+            lastModified: object.lastModified,
+            size: object.size,
+          })),
+        isTruncated: response.isTruncated,
+        nextContinuationToken: response.nextContinuationToken,
+      };
+    }
+
     const response = await this.s3Client.send(
       new ListObjectsV2Command({
         Bucket: this.bucket,
@@ -466,6 +827,8 @@ export class SyncService implements OnModuleInit {
   async presignUploadBatch(
     dto: PresignUploadBatchRequestDto,
     ctx: UserContext,
+    requestOrigin = "http://localhost:3929",
+    sourceId?: string,
   ): Promise<PresignUploadBatchResponseDto> {
     // Cap batch size: each item triggers a signing operation, so an unbounded
     // array is a CPU/memory amplification vector for an authenticated caller.
@@ -484,6 +847,28 @@ export class SyncService implements OnModuleInit {
 
     const expiresIn = clampExpiresIn(dto.expiresIn);
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
+
+    if (this.localStore) {
+      const items = dto.items.map((item) => {
+        const key = this.scopeKey(ctx, item.key);
+        this.validateKeyAccess(ctx, key);
+        this.localStore?.validateKey(key);
+        return {
+          key: item.key,
+          url: this.localTransferUrl(
+            "upload",
+            key,
+            expiresIn,
+            requestOrigin,
+            item.contentType || "application/octet-stream",
+            undefined,
+            sourceId,
+          ),
+          expiresAt: expiresAt.toISOString(),
+        };
+      });
+      return { items };
+    }
 
     const items = await Promise.all(
       dto.items.map(async (item) => {
@@ -534,6 +919,7 @@ export class SyncService implements OnModuleInit {
   async presignDownloadBatch(
     dto: PresignDownloadBatchRequestDto,
     ctx: UserContext,
+    requestOrigin = "http://localhost:3929",
   ): Promise<PresignDownloadBatchResponseDto> {
     if (
       !Array.isArray(dto.keys) ||
@@ -545,6 +931,26 @@ export class SyncService implements OnModuleInit {
     }
     const expiresIn = clampExpiresIn(dto.expiresIn);
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
+
+    if (this.localStore) {
+      return {
+        items: dto.keys.map((rawKey) => {
+          const key = this.scopeKey(ctx, rawKey);
+          this.validateKeyAccess(ctx, key);
+          this.localStore?.validateKey(key);
+          return {
+            key: rawKey,
+            url: this.localTransferUrl(
+              "download",
+              key,
+              expiresIn,
+              requestOrigin,
+            ),
+            expiresAt: expiresAt.toISOString(),
+          };
+        }),
+      };
+    }
 
     const items = await Promise.all(
       dto.keys.map(async (rawKey) => {
@@ -572,6 +978,7 @@ export class SyncService implements OnModuleInit {
   async deletePrefix(
     dto: DeletePrefixRequestDto,
     ctx: UserContext,
+    sourceId?: string,
   ): Promise<DeletePrefixResponseDto> {
     const prefix = this.scopeKey(ctx, dto.prefix);
     // Bulk delete is the highest-blast-radius op, yet it was the only mutating
@@ -580,9 +987,37 @@ export class SyncService implements OnModuleInit {
     // verbatim) could wipe an entire shared namespace. Enforce scope, and
     // refuse an empty scoped prefix (which would match the whole scope).
     this.validateKeyAccess(ctx, prefix);
-    if (ctx.mode === "cloud" && prefix.length === 0) {
+    if (prefix.length === 0) {
       throw new ForbiddenException("Refusing to delete an empty prefix");
     }
+
+    if (this.localStore) {
+      const deletedObjects = await this.localStore.deletePrefix(prefix);
+      let tombstoneCreated = false;
+      if (dto.tombstoneKey && deletedObjects.length > 0) {
+        const scopedTombstoneKey = this.scopeKey(ctx, dto.tombstoneKey);
+        this.validateKeyAccess(ctx, scopedTombstoneKey);
+        const tombstone = await this.localStore.putBuffer(
+          scopedTombstoneKey,
+          JSON.stringify({
+            prefix: dto.prefix,
+            deleted_at: dto.deletedAt || new Date().toISOString(),
+            deleted_count: deletedObjects.length,
+          }),
+          "application/json",
+          undefined,
+          sourceId,
+        );
+        tombstoneCreated = true;
+        this.publishObjectChange("change", tombstone, sourceId);
+      } else {
+        for (const object of deletedObjects) {
+          this.publishObjectChange("delete", object, sourceId);
+        }
+      }
+      return { deletedCount: deletedObjects.length, tombstoneCreated };
+    }
+
     let deletedCount = 0;
     let tombstoneCreated = false;
     let continuationToken: string | undefined;
@@ -655,23 +1090,83 @@ export class SyncService implements OnModuleInit {
     return { deletedCount, tombstoneCreated };
   }
 
+  private eventForContext(
+    event: SubscribeEventDto,
+    ctx: UserContext,
+  ): SubscribeEventDto | null {
+    if (!event.key) return event;
+    if (ctx.mode === "self-hosted") return event;
+    if (!event.key.startsWith(ctx.prefix)) return null;
+    return { ...event, key: event.key.slice(ctx.prefix.length) };
+  }
+
+  private async initialLocalEvents(
+    ctx: UserContext,
+  ): Promise<SubscribeEventDto[]> {
+    const store = this.requireLocalStore();
+    const events: SubscribeEventDto[] = [];
+    for (const scope of this.scopesFor(ctx)) {
+      const objects = await store.listSyncSignals(scope);
+      for (const object of objects) {
+        if (!this.shouldPublishKey(object.key)) continue;
+        const event = this.eventForContext(
+          {
+            type: "change",
+            key: object.key,
+            lastModified: object.lastModified,
+            size: object.size,
+            sourceId: object.sourceId,
+          },
+          ctx,
+        );
+        if (event) events.push(event);
+      }
+    }
+    return events;
+  }
+
   /**
-   * Long-lived per-client poll loop.
+   * Local storage publishes immediately after each atomic write. S3 remains a
+   * compatibility backend and uses a low-frequency manifest poll fallback.
    *
    * Steady-state cost is one HEAD per scope per poll (Class B on R2). A LIST
    * (Class A) is only issued when:
    *   1. it's the client's first poll (need to seed the state map), or
    *   2. a write touched the scope and bumped its manifest ETag.
    *
-   * This is *eventual* cross-device sync, gated by the poll interval.
-   * Real-time push is intentionally not provided here — that lives in the
-   * paid backend.
+   * This fallback is eventual cross-device sync, gated by the poll interval.
+   * The default local backend above uses immediate completion events instead.
    */
   subscribe(
     ctx: UserContext,
-    pollIntervalMs = 5000,
+    pollIntervalMs = 1000,
+    sourceId?: string,
   ): Observable<SubscribeEventDto> {
-    const basePrefixes = ["profiles/", "proxies/", "groups/", "tombstones/"];
+    if (this.localStore) {
+      const initial$ = defer(() => from(this.initialLocalEvents(ctx))).pipe(
+        mergeMap((events) => from(events)),
+        filter((event) => !sourceId || event.sourceId !== sourceId),
+      );
+      const changes$ = this.changeSubject.asObservable().pipe(
+        filter((event) => !sourceId || event.sourceId !== sourceId),
+        map((event) => this.eventForContext(event, ctx)),
+        filter((event): event is SubscribeEventDto => event !== null),
+      );
+      const ping$ = interval(15_000).pipe(
+        map(() => ({ type: "ping" as const })),
+      );
+      return merge(initial$, changes$, ping$);
+    }
+
+    const basePrefixes = [
+      "profiles/",
+      "proxies/",
+      "groups/",
+      "vpns/",
+      "extensions/",
+      "extension_groups/",
+      "tombstones/",
+    ];
     const scopes = this.scopesFor(ctx);
 
     // Per-connection state (not shared across subscribers).
@@ -757,7 +1252,7 @@ export class SyncService implements OnModuleInit {
                   ? fullKey.substring(scope.length)
                   : fullKey;
                 // Skip the manifest object itself + anything outside the
-                // four data prefixes.
+                // synchronized data prefixes.
                 if (relativeKey === MANIFEST_KEY) continue;
                 if (!basePrefixes.some((bp) => relativeKey.startsWith(bp))) {
                   continue;
@@ -808,11 +1303,12 @@ export class SyncService implements OnModuleInit {
 
     const ping$ = interval(30000).pipe(map(() => ({ type: "ping" as const })));
 
-    return merge(pollChanges$, ping$, this.changeSubject.asObservable());
-  }
-
-  emitChange(event: SubscribeEventDto) {
-    this.changeSubject.next(event);
+    const scopedChanges$ = this.changeSubject.asObservable().pipe(
+      filter((event) => !sourceId || event.sourceId !== sourceId),
+      map((event) => this.eventForContext(event, ctx)),
+      filter((event): event is SubscribeEventDto => event !== null),
+    );
+    return merge(pollChanges$, ping$, scopedChanges$);
   }
 
   async cleanupExcessProfiles(

@@ -118,7 +118,7 @@ The served `/openapi.json` comes from the hand-maintained `ApiDoc` derive (`#[de
 Handlers route manager errors through `manager_error_response`, which maps message content onto a consistent status and passes the text through as the response body:
 
 - `401` — missing/invalid bearer token (auth middleware; empty body).
-- `402` — the five automation endpoints (`run`, `open-url`, `kill`, `batch/run`, `batch/stop`) without a paid plan, and expired-proxy (`PROXY_PAYMENT_REQUIRED`) checks.
+- `402` — expired-proxy (`PROXY_PAYMENT_REQUIRED`) checks.
 - `404` — entity not found (`… not found` / `*_NOT_FOUND`).
 - `400` — validation, duplicates, empty names, invalid/unsupported/unavailable input.
 - `409` — conflicts: browser version already being downloaded, profile locked by another team member (run), browser running during cookie import.

@@ -1,5 +1,6 @@
-use super::engine::SyncEngine;
+use super::engine::{preempt_profile_sync, SyncEngine};
 use super::subscription::SyncWorkItem;
+use super::types::SyncError;
 use crate::events;
 use crate::profile::ProfileManager;
 use std::collections::{HashMap, HashSet};
@@ -11,6 +12,35 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 static GLOBAL_SCHEDULER: std::sync::Mutex<Option<Arc<SyncScheduler>>> = std::sync::Mutex::new(None);
+
+lazy_static::lazy_static! {
+  static ref PROFILE_SYNC_MUTEXES: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> =
+    std::sync::Mutex::new(HashMap::new());
+}
+
+pub(crate) fn profile_sync_mutex(profile_id: &str) -> Arc<Mutex<()>> {
+  let mut mutexes = PROFILE_SYNC_MUTEXES.lock().unwrap();
+  mutexes
+    .entry(profile_id.to_string())
+    .or_insert_with(|| Arc::new(Mutex::new(())))
+    .clone()
+}
+
+fn retry_set_after(
+  pending: Arc<Mutex<HashSet<String>>>,
+  ids: impl IntoIterator<Item = String>,
+  delay: Duration,
+) {
+  let ids: Vec<String> = ids.into_iter().collect();
+  tokio::spawn(async move {
+    sleep(delay).await;
+    pending.lock().await.extend(ids);
+  });
+}
+
+fn is_transient(error: &SyncError) -> bool {
+  matches!(error, SyncError::NetworkError(_) | SyncError::IoError(_))
+}
 
 pub fn get_global_scheduler() -> Option<Arc<SyncScheduler>> {
   GLOBAL_SCHEDULER.lock().ok().and_then(|g| g.clone())
@@ -127,6 +157,10 @@ impl SyncScheduler {
   pub async fn mark_profile_running(&self, profile_id: &str) {
     let mut running = self.running_profiles.lock().await;
     running.insert(profile_id.to_string());
+    drop(running);
+    if self.in_flight_profiles.lock().await.contains(profile_id) {
+      preempt_profile_sync(profile_id);
+    }
     log::debug!("Marked profile {} as running", profile_id);
   }
 
@@ -141,7 +175,7 @@ impl SyncScheduler {
       pending.insert(
         profile_id.to_string(),
         ProfileStopTime {
-          stopped_at: Instant::now() - Duration::from_secs(3),
+          stopped_at: Instant::now(),
           queued: true,
         },
       );
@@ -205,7 +239,7 @@ impl SyncScheduler {
       pending.insert(
         profile_id.clone(),
         ProfileStopTime {
-          stopped_at: Instant::now() - Duration::from_secs(3),
+          stopped_at: Instant::now(),
           queued: true,
         },
       );
@@ -250,6 +284,8 @@ impl SyncScheduler {
 
   pub async fn sync_all_enabled_profiles(&self, _app_handle: &tauri::AppHandle) {
     log::info!("Starting initial sync for all enabled profiles...");
+
+    crate::team_lock::PROFILE_LOCK.connect().await;
 
     let profiles = {
       let profile_manager = ProfileManager::instance();
@@ -325,29 +361,35 @@ impl SyncScheduler {
       return;
     }
 
-    let scheduler = self.clone();
-    let app_handle_clone = app_handle.clone();
-
+    let receiver_scheduler = self.clone();
     tokio::spawn(async move {
-      while scheduler.running.load(Ordering::SeqCst) {
+      while receiver_scheduler.running.load(Ordering::SeqCst) {
         tokio::select! {
           Some(work_item) = work_rx.recv() => {
             match work_item {
-              SyncWorkItem::Profile(id) => scheduler.queue_profile_sync(id).await,
-              SyncWorkItem::Proxy(id) => scheduler.queue_proxy_sync(id).await,
-              SyncWorkItem::Group(id) => scheduler.queue_group_sync(id).await,
-              SyncWorkItem::Vpn(id) => scheduler.queue_vpn_sync(id).await,
-              SyncWorkItem::Extension(id) => scheduler.queue_extension_sync(id).await,
-              SyncWorkItem::ExtensionGroup(id) => scheduler.queue_extension_group_sync(id).await,
+              SyncWorkItem::Profile(id) => receiver_scheduler.queue_profile_sync(id).await,
+              SyncWorkItem::Proxy(id) => receiver_scheduler.queue_proxy_sync(id).await,
+              SyncWorkItem::Group(id) => receiver_scheduler.queue_group_sync(id).await,
+              SyncWorkItem::Vpn(id) => receiver_scheduler.queue_vpn_sync(id).await,
+              SyncWorkItem::Extension(id) => receiver_scheduler.queue_extension_sync(id).await,
+              SyncWorkItem::ExtensionGroup(id) => receiver_scheduler.queue_extension_group_sync(id).await,
               SyncWorkItem::Tombstone(entity_type, entity_id) => {
-                scheduler.queue_tombstone(entity_type, entity_id).await
+                receiver_scheduler.queue_tombstone(entity_type, entity_id).await
               }
             }
           }
-          _ = sleep(Duration::from_millis(2000)) => {
-            scheduler.process_pending(&app_handle_clone).await;
-          }
+          _ = sleep(Duration::from_millis(250)) => {}
         }
+      }
+
+      log::info!("Sync work receiver stopped");
+    });
+
+    let processor_scheduler = self.clone();
+    tokio::spawn(async move {
+      while processor_scheduler.running.load(Ordering::SeqCst) {
+        sleep(Duration::from_millis(50)).await;
+        processor_scheduler.process_pending(&app_handle).await;
       }
 
       log::info!("Sync scheduler stopped");
@@ -355,13 +397,15 @@ impl SyncScheduler {
   }
 
   async fn process_pending(&self, app_handle: &tauri::AppHandle) {
-    self.process_pending_profiles(app_handle).await;
-    self.process_pending_proxies(app_handle).await;
-    self.process_pending_groups(app_handle).await;
-    self.process_pending_vpns(app_handle).await;
-    self.process_pending_extensions(app_handle).await;
-    self.process_pending_extension_groups(app_handle).await;
-    self.process_pending_tombstones(app_handle).await;
+    tokio::join!(
+      self.process_pending_profiles(app_handle),
+      self.process_pending_proxies(app_handle),
+      self.process_pending_groups(app_handle),
+      self.process_pending_vpns(app_handle),
+      self.process_pending_extensions(app_handle),
+      self.process_pending_extension_groups(app_handle),
+      self.process_pending_tombstones(app_handle),
+    );
   }
 
   async fn process_pending_profiles(&self, app_handle: &tauri::AppHandle) {
@@ -370,11 +414,14 @@ impl SyncScheduler {
       let running = self.running_profiles.lock().await;
       let in_flight = self.in_flight_profiles.lock().await;
 
-      // Sync immediately if not running and not in-flight (no delay check)
+      let now = Instant::now();
       let ready: Vec<String> = pending
         .iter()
         .filter(|(id, stop_time)| {
-          !running.contains(*id) && !in_flight.contains(*id) && stop_time.queued
+          !running.contains(*id)
+            && !in_flight.contains(*id)
+            && stop_time.queued
+            && stop_time.stopped_at <= now
         })
         .map(|(id, _)| id.clone())
         .collect();
@@ -403,7 +450,11 @@ impl SyncScheduler {
     for profile_id in to_sync {
       let app = app_handle.clone();
       let in_flight = self.in_flight_profiles.clone();
+      let pending = self.pending_profiles.clone();
+      let running = self.running_profiles.clone();
       sync_set.spawn(async move {
+        let sync_mutex = profile_sync_mutex(&profile_id);
+        let _sync_guard = sync_mutex.lock().await;
         log::info!("Executing queued sync for profile {}", profile_id);
         let _ = events::emit(
           "profile-sync-status",
@@ -423,26 +474,80 @@ impl SyncScheduler {
         };
 
         let Some(profile) = profile_to_sync else {
-          let mut inf = in_flight.lock().await;
-          inf.remove(&profile_id);
+          in_flight.lock().await.remove(&profile_id);
+          if crate::team_lock::PROFILE_LOCK
+            .is_locked_by_current(&profile_id)
+            .await
+          {
+            let _ = crate::team_lock::PROFILE_LOCK
+              .release_lock(&profile_id)
+              .await;
+          }
           return;
         };
 
-        let result = match SyncEngine::create_from_settings(&app).await {
-          Ok(engine) => engine.sync_profile(&app, &profile).await,
-          Err(e) => {
-            log::error!("Failed to create sync engine: {}", e);
-            Err(super::types::SyncError::NotConfigured)
-          }
-        };
-
-        {
-          let mut inf = in_flight.lock().await;
-          inf.remove(&profile_id);
+        if let Err(error) = crate::team_lock::acquire_team_lock_if_needed(&profile).await {
+          log::debug!(
+            "Profile {} is unavailable for sync, retrying shortly: {}",
+            profile_id,
+            error
+          );
+          in_flight.lock().await.remove(&profile_id);
+          pending.lock().await.insert(
+            profile_id.clone(),
+            ProfileStopTime {
+              stopped_at: Instant::now() + Duration::from_secs(1),
+              queued: true,
+            },
+          );
+          let _ = events::emit(
+            "profile-sync-status",
+            serde_json::json!({
+              "profile_id": profile_id,
+              "status": "waiting"
+            }),
+          );
+          return;
         }
 
+        let mut attempt = 0_u32;
+        let result = loop {
+          let sync_result = match SyncEngine::create_from_settings(&app).await {
+            Ok(engine) => engine.sync_profile(&app, &profile).await,
+            Err(error) => {
+              log::error!("Failed to create sync engine: {}", error);
+              Err(SyncError::NotConfigured)
+            }
+          };
+          let retryable = matches!(
+            &sync_result,
+            Err(SyncError::NetworkError(_)) | Err(SyncError::IoError(_))
+          );
+          if !retryable || attempt >= 2 {
+            break sync_result;
+          }
+          attempt += 1;
+          let delay = if attempt == 1 { 100 } else { 300 };
+          log::debug!(
+            "Retrying profile {} sync in {}ms (attempt {})",
+            profile_id,
+            delay,
+            attempt + 1
+          );
+          sleep(Duration::from_millis(delay)).await;
+        };
+
+        in_flight.lock().await.remove(&profile_id);
+        let is_running = running.lock().await.contains(&profile_id);
         match result {
           Ok(()) => {
+            if !is_running
+              && crate::team_lock::PROFILE_LOCK
+                .is_locked_by_current(&profile_id)
+                .await
+            {
+              crate::team_lock::release_team_lock_if_needed(&profile).await;
+            }
             log::info!("Profile {} synced successfully", profile_id);
             let _ = events::emit(
               "profile-sync-status",
@@ -452,8 +557,38 @@ impl SyncScheduler {
               }),
             );
           }
+          Err(SyncError::Cancelled) if is_running => {
+            log::debug!(
+              "Profile {} sync yielded to a new local browser run",
+              profile_id
+            );
+            let _ = events::emit(
+              "profile-sync-status",
+              serde_json::json!({
+                "profile_id": profile_id,
+                "status": "waiting"
+              }),
+            );
+          }
           Err(e) => {
             log::error!("Failed to sync profile {}: {}", profile_id, e);
+            let will_retry =
+              !is_running && matches!(&e, SyncError::NetworkError(_) | SyncError::IoError(_));
+            if will_retry {
+              pending.lock().await.insert(
+                profile_id.clone(),
+                ProfileStopTime {
+                  stopped_at: Instant::now() + Duration::from_secs(2),
+                  queued: true,
+                },
+              );
+            } else if !is_running
+              && crate::team_lock::PROFILE_LOCK
+                .is_locked_by_current(&profile_id)
+                .await
+            {
+              crate::team_lock::release_team_lock_if_needed(&profile).await;
+            }
             let _ = events::emit(
               "profile-sync-status",
               serde_json::json!({
@@ -467,13 +602,16 @@ impl SyncScheduler {
       });
     }
 
-    // Wait for all parallel syncs to finish (only if we actually spawned any)
+    // Reap profile jobs in the background so newly arriving work can be
+    // dispatched while a different profile is transferring a large snapshot.
     if !sync_set.is_empty() {
-      while let Some(result) = sync_set.join_next().await {
-        if let Err(e) = result {
-          log::error!("Profile sync task panicked: {e}");
+      tokio::spawn(async move {
+        while let Some(result) = sync_set.join_next().await {
+          if let Err(e) = result {
+            log::error!("Profile sync task panicked: {e}");
+          }
         }
-      }
+      });
     }
   }
 
@@ -514,6 +652,13 @@ impl SyncScheduler {
             }
             Err(e) => {
               log::error!("Failed to sync proxy {}: {}", proxy_id, e);
+              if is_transient(&e) {
+                retry_set_after(
+                  self.pending_proxies.clone(),
+                  [proxy_id.clone()],
+                  Duration::from_secs(2),
+                );
+              }
               let _ = events::emit(
                 "proxy-sync-status",
                 serde_json::json!({
@@ -530,6 +675,11 @@ impl SyncScheduler {
       }
       Err(e) => {
         log::error!("Failed to create sync engine: {}", e);
+        retry_set_after(
+          self.pending_proxies.clone(),
+          proxies_to_sync,
+          Duration::from_secs(5),
+        );
       }
     }
   }
@@ -571,6 +721,13 @@ impl SyncScheduler {
             }
             Err(e) => {
               log::error!("Failed to sync group {}: {}", group_id, e);
+              if is_transient(&e) {
+                retry_set_after(
+                  self.pending_groups.clone(),
+                  [group_id.clone()],
+                  Duration::from_secs(2),
+                );
+              }
               let _ = events::emit(
                 "group-sync-status",
                 serde_json::json!({
@@ -587,6 +744,11 @@ impl SyncScheduler {
       }
       Err(e) => {
         log::error!("Failed to create sync engine: {}", e);
+        retry_set_after(
+          self.pending_groups.clone(),
+          groups_to_sync,
+          Duration::from_secs(5),
+        );
       }
     }
   }
@@ -625,6 +787,13 @@ impl SyncScheduler {
             }
             Err(e) => {
               log::error!("Failed to sync VPN {}: {}", vpn_id, e);
+              if is_transient(&e) {
+                retry_set_after(
+                  self.pending_vpns.clone(),
+                  [vpn_id.clone()],
+                  Duration::from_secs(2),
+                );
+              }
               let _ = events::emit(
                 "vpn-sync-status",
                 serde_json::json!({
@@ -639,6 +808,11 @@ impl SyncScheduler {
       }
       Err(e) => {
         log::error!("Failed to create sync engine: {}", e);
+        retry_set_after(
+          self.pending_vpns.clone(),
+          vpns_to_sync,
+          Duration::from_secs(5),
+        );
       }
     }
   }
@@ -667,6 +841,13 @@ impl SyncScheduler {
             .await
           {
             log::error!("Failed to sync extension {}: {}", ext_id, e);
+            if is_transient(&e) {
+              retry_set_after(
+                self.pending_extensions.clone(),
+                [ext_id.clone()],
+                Duration::from_secs(2),
+              );
+            }
             let _ = events::emit(
               "extension-sync-status",
               serde_json::json!({ "id": ext_id, "status": "error" }),
@@ -681,6 +862,11 @@ impl SyncScheduler {
       }
       Err(e) => {
         log::error!("Failed to create sync engine: {}", e);
+        retry_set_after(
+          self.pending_extensions.clone(),
+          extensions_to_sync,
+          Duration::from_secs(5),
+        );
       }
     }
   }
@@ -709,6 +895,13 @@ impl SyncScheduler {
             .await
           {
             log::error!("Failed to sync extension group {}: {}", group_id, e);
+            if is_transient(&e) {
+              retry_set_after(
+                self.pending_extension_groups.clone(),
+                [group_id.clone()],
+                Duration::from_secs(2),
+              );
+            }
             let _ = events::emit(
               "extension-sync-status",
               serde_json::json!({ "id": group_id, "status": "error" }),
@@ -723,6 +916,11 @@ impl SyncScheduler {
       }
       Err(e) => {
         log::error!("Failed to create sync engine: {}", e);
+        retry_set_after(
+          self.pending_extension_groups.clone(),
+          groups_to_sync,
+          Duration::from_secs(5),
+        );
       }
     }
   }

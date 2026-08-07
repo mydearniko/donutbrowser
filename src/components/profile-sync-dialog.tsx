@@ -38,7 +38,8 @@ export function ProfileSyncDialog({
   const { t } = useTranslation();
   const { user: cloudUser } = useCloudAuth();
   const isCloudSyncEligible = getEntitlements(cloudUser).cloudBackup;
-  // Encryption available to everyone except team members who aren't owners
+  // A team's shared encryption state is owner-managed so members cannot rotate
+  // credentials for everyone else.
   const canUseEncryption =
     cloudUser == null ||
     cloudUser.plan !== "team" ||
@@ -100,7 +101,7 @@ export function ProfileSyncDialog({
       }
 
       if (newMode === "Encrypted" && !canUseEncryption) {
-        showErrorToast(t("settings.encryption.requiresProOrOwner"));
+        showErrorToast(t("settings.encryption.teamOwnerRequired"));
         return;
       }
 
@@ -258,7 +259,7 @@ export function ProfileSyncDialog({
                         <p className="text-sm text-muted-foreground">
                           {canUseEncryption
                             ? t("sync.mode.encryptedDescription")
-                            : t("settings.encryption.requiresProOrOwner")}
+                            : t("settings.encryption.teamOwnerRequired")}
                         </p>
                       </Label>
                     </div>

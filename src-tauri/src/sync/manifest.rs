@@ -5,10 +5,43 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use super::types::{SyncError, SyncResult};
 use crate::profile::types::BrowserProfile;
+
+pub(crate) const HIGH_VALUE_FILE_PATTERNS: &[&str] = &[
+  "Cookies",
+  "Login Data",
+  "Local Storage",
+  "Local State",
+  "Preferences",
+  "Secure Preferences",
+  "Web Data",
+  "History",
+  "Current Session",
+  "Current Tabs",
+  "Last Session",
+  "Last Tabs",
+  "Sessions/",
+  "Extension Cookies",
+  "cookies.sqlite",
+  "key4.db",
+  "logins.json",
+  "cert9.db",
+  "places.sqlite",
+  "formhistory.sqlite",
+  "permissions.sqlite",
+  "prefs.js",
+  "storage.sqlite",
+];
+
+pub(crate) fn is_high_value_profile_file(path: &str) -> bool {
+  HIGH_VALUE_FILE_PATTERNS
+    .iter()
+    .any(|pattern| path.contains(pattern))
+}
 
 /// Default exclude patterns for volatile browser profile files.
 /// Patterns use `**/` prefix to match at any directory depth, since the sync
@@ -195,7 +228,15 @@ fn build_exclude_globset(patterns: &[String]) -> SyncResult<GlobSet> {
 
 /// Compute blake3 hash of a file
 /// Returns None if the file doesn't exist (was deleted)
-fn hash_file(path: &Path) -> Result<Option<String>, SyncError> {
+fn check_cancelled(cancel: Option<&AtomicBool>) -> SyncResult<()> {
+  if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+    Err(SyncError::Cancelled)
+  } else {
+    Ok(())
+  }
+}
+
+fn hash_file(path: &Path, cancel: Option<&AtomicBool>) -> Result<Option<String>, SyncError> {
   let file = match File::open(path) {
     Ok(f) => f,
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -212,6 +253,7 @@ fn hash_file(path: &Path) -> Result<Option<String>, SyncError> {
   let mut buffer = [0u8; 65536]; // 64KB buffer
 
   loop {
+    check_cancelled(cancel)?;
     let bytes_read = reader
       .read(&mut buffer)
       .map_err(|e| SyncError::IoError(format!("Failed to read {}: {e}", path.display())))?;
@@ -227,7 +269,7 @@ fn hash_file(path: &Path) -> Result<Option<String>, SyncError> {
 /// Compute blake3 hash of metadata.json after sanitizing volatile fields.
 /// This prevents infinite sync loops where updating last_sync triggers a new sync.
 fn hash_sanitized_metadata(path: &Path) -> Result<Option<String>, SyncError> {
-  let content = match fs::read_to_string(path) {
+  let content = match fs::read(path) {
     Ok(c) => c,
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
     Err(e) => {
@@ -238,7 +280,18 @@ fn hash_sanitized_metadata(path: &Path) -> Result<Option<String>, SyncError> {
     }
   };
 
-  let mut profile: BrowserProfile = serde_json::from_str(&content).map_err(|e| {
+  Ok(Some(hash_manifest_bytes("metadata.json", &content)?))
+}
+
+/// Hash bytes exactly as manifest generation does. Transfer workers use this
+/// before committing a file so the uploaded/downloaded object is guaranteed to
+/// match the manifest that will become visible last.
+pub(crate) fn hash_manifest_bytes(relative_path: &str, content: &[u8]) -> SyncResult<String> {
+  if relative_path != "metadata.json" {
+    return Ok(blake3::hash(content).to_hex().to_string());
+  }
+
+  let mut profile: BrowserProfile = serde_json::from_slice(content).map_err(|e| {
     SyncError::SerializationError(format!("Failed to parse metadata for hashing: {e}"))
   })?;
 
@@ -254,10 +307,14 @@ fn hash_sanitized_metadata(path: &Path) -> Result<Option<String>, SyncError> {
   let mut hasher = blake3::Hasher::new();
   hasher.update(sanitized_json.as_bytes());
 
-  Ok(Some(hasher.finalize().to_hex().to_string()))
+  Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Get mtime as unix timestamp
+/// Get mtime as nanoseconds since the Unix epoch.
+///
+/// Second precision can reuse a stale hash when Chromium rewrites a same-sized
+/// database twice in one second. Nanoseconds also let directory mtimes carry
+/// file deletions into the manifest ordering.
 /// Returns None if the file doesn't exist (was deleted)
 fn get_mtime(path: &Path) -> Result<Option<i64>, SyncError> {
   let metadata = match path.metadata() {
@@ -278,7 +335,7 @@ fn get_mtime(path: &Path) -> Result<Option<i64>, SyncError> {
   Ok(Some(
     mtime
       .duration_since(SystemTime::UNIX_EPOCH)
-      .map(|d| d.as_secs() as i64)
+      .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
       .unwrap_or(0),
   ))
 }
@@ -289,6 +346,25 @@ pub fn generate_manifest(
   profile_dir: &Path,
   cache: &mut HashCache,
 ) -> SyncResult<SyncManifest> {
+  generate_manifest_inner(profile_id, profile_dir, cache, None)
+}
+
+pub(crate) fn generate_manifest_cancellable(
+  profile_id: &str,
+  profile_dir: &Path,
+  cache: &mut HashCache,
+  cancel: &AtomicBool,
+) -> SyncResult<SyncManifest> {
+  generate_manifest_inner(profile_id, profile_dir, cache, Some(cancel))
+}
+
+fn generate_manifest_inner(
+  profile_id: &str,
+  profile_dir: &Path,
+  cache: &mut HashCache,
+  cancel: Option<&AtomicBool>,
+) -> SyncResult<SyncManifest> {
+  check_cancelled(cancel)?;
   let exclude_patterns: Vec<String> = DEFAULT_EXCLUDE_PATTERNS
     .iter()
     .map(|s| s.to_string())
@@ -296,7 +372,6 @@ pub fn generate_manifest(
   let globset = build_exclude_globset(&exclude_patterns)?;
 
   let mut manifest = SyncManifest::new(profile_id.to_string(), exclude_patterns);
-  let mut max_mtime: i64 = 0;
 
   if !profile_dir.exists() {
     log::debug!(
@@ -305,6 +380,7 @@ pub fn generate_manifest(
     );
     return Ok(manifest);
   }
+  let mut max_mtime = get_mtime(profile_dir)?.unwrap_or(0);
 
   fn walk_dir(
     dir: &Path,
@@ -313,12 +389,14 @@ pub fn generate_manifest(
     cache: &mut HashCache,
     files: &mut Vec<ManifestFileEntry>,
     max_mtime: &mut i64,
+    cancel: Option<&AtomicBool>,
   ) -> SyncResult<()> {
     let entries = fs::read_dir(dir).map_err(|e| {
       SyncError::IoError(format!("Failed to read directory {}: {e}", dir.display()))
     })?;
 
     for entry in entries {
+      check_cancelled(cancel)?;
       let entry = entry.map_err(|e| {
         SyncError::IoError(format!("Failed to read entry in {}: {e}", dir.display()))
       })?;
@@ -354,7 +432,10 @@ pub fn generate_manifest(
       };
 
       if metadata.is_dir() {
-        walk_dir(&path, base_dir, globset, cache, files, max_mtime)?;
+        if let Some(mtime) = get_mtime(&path)? {
+          *max_mtime = (*max_mtime).max(mtime);
+        }
+        walk_dir(&path, base_dir, globset, cache, files, max_mtime, cancel)?;
       } else if metadata.is_file() {
         let size = metadata.len();
         let mtime = match get_mtime(&path)? {
@@ -384,21 +465,33 @@ pub fn generate_manifest(
               continue;
             }
           }
-        } else if let Some(cached_hash) = cache.get(&relative_path, size, mtime) {
-          cached_hash.to_string()
         } else {
-          match hash_file(&path)? {
-            Some(computed_hash) => {
-              cache.insert(relative_path.clone(), size, mtime, computed_hash.clone());
-              computed_hash
-            }
-            None => {
-              // File was deleted, skip it
-              log::debug!(
-                "File disappeared during manifest generation, skipping: {}",
-                path.display()
-              );
-              continue;
+          // Timestamp granularity is not guaranteed even when the platform
+          // exposes nanoseconds. Rehash cheap files and state that would be
+          // costly to lose; retain the cache for large, noncritical content.
+          let cached_hash = if size > 64 * 1024 && !is_high_value_profile_file(&relative_path) {
+            cache
+              .get(&relative_path, size, mtime)
+              .map(ToOwned::to_owned)
+          } else {
+            None
+          };
+          if let Some(cached_hash) = cached_hash {
+            cached_hash
+          } else {
+            match hash_file(&path, cancel)? {
+              Some(computed_hash) => {
+                cache.insert(relative_path.clone(), size, mtime, computed_hash.clone());
+                computed_hash
+              }
+              None => {
+                // File was deleted, skip it
+                log::debug!(
+                  "File disappeared during manifest generation, skipping: {}",
+                  path.display()
+                );
+                continue;
+              }
             }
           }
         };
@@ -422,6 +515,7 @@ pub fn generate_manifest(
     cache,
     &mut manifest.files,
     &mut max_mtime,
+    cancel,
   )?;
 
   // Sort files for deterministic manifest
@@ -429,7 +523,9 @@ pub fn generate_manifest(
 
   // Update the updatedAt timestamp to max mtime
   if max_mtime > 0 {
-    if let Some(dt) = DateTime::from_timestamp(max_mtime, 0) {
+    let seconds = max_mtime / 1_000_000_000;
+    let nanoseconds = (max_mtime % 1_000_000_000) as u32;
+    if let Some(dt) = DateTime::from_timestamp(seconds, nanoseconds) {
       manifest.updated_at = dt.to_rfc3339();
     }
   }
@@ -446,6 +542,91 @@ pub struct ManifestDiff {
   pub files_to_delete_remote: Vec<String>,
 }
 
+/// Compare only the synchronized file set and hashes. Generation timestamps
+/// and local mtimes are intentionally ignored: they are hints, not identity.
+pub fn manifests_have_same_content(left: &SyncManifest, right: &SyncManifest) -> bool {
+  if left.files.len() != right.files.len() {
+    return false;
+  }
+  left
+    .files
+    .iter()
+    .zip(&right.files)
+    .all(|(left, right)| left.path == right.path && left.hash == right.hash)
+}
+
+/// Stable identity of the committed file set. This deliberately ignores
+/// generation timestamps and local mtimes so it can be stored as remote object
+/// metadata and compared without downloading or walking the profile.
+pub fn manifest_content_hash(manifest: &SyncManifest) -> String {
+  let mut files: Vec<_> = manifest.files.iter().collect();
+  files.sort_by(|left, right| left.path.cmp(&right.path));
+
+  let mut hasher = blake3::Hasher::new();
+  hasher.update(&manifest.version.to_le_bytes());
+  hasher.update(&(manifest.profile_id.len() as u64).to_le_bytes());
+  hasher.update(manifest.profile_id.as_bytes());
+  hasher.update(&[u8::from(manifest.encrypted)]);
+  for file in files {
+    hasher.update(&(file.path.len() as u64).to_le_bytes());
+    hasher.update(file.path.as_bytes());
+    hasher.update(&(file.hash.len() as u64).to_le_bytes());
+    hasher.update(file.hash.as_bytes());
+  }
+  hasher.finalize().to_hex().to_string()
+}
+
+fn diff_local_to_remote(
+  local_files: &HashMap<&str, &ManifestFileEntry>,
+  remote_files: &HashMap<&str, &ManifestFileEntry>,
+) -> ManifestDiff {
+  let mut diff = ManifestDiff::default();
+  for (path, local_entry) in local_files {
+    match remote_files.get(path) {
+      Some(remote_entry) if remote_entry.hash != local_entry.hash => {
+        diff.files_to_upload.push((*local_entry).clone());
+      }
+      None => diff.files_to_upload.push((*local_entry).clone()),
+      _ => {}
+    }
+  }
+  for path in remote_files.keys() {
+    if !local_files.contains_key(path) {
+      diff.files_to_delete_remote.push(path.to_string());
+    }
+  }
+  diff
+}
+
+fn diff_remote_to_local(
+  local_files: &HashMap<&str, &ManifestFileEntry>,
+  remote_files: &HashMap<&str, &ManifestFileEntry>,
+) -> ManifestDiff {
+  let mut diff = ManifestDiff::default();
+  for (path, remote_entry) in remote_files {
+    match local_files.get(path) {
+      Some(local_entry) if local_entry.hash != remote_entry.hash => {
+        diff.files_to_download.push((*remote_entry).clone());
+      }
+      None => diff.files_to_download.push((*remote_entry).clone()),
+      _ => {}
+    }
+  }
+  for path in local_files.keys() {
+    if !remote_files.contains_key(path) {
+      diff.files_to_delete_local.push(path.to_string());
+    }
+  }
+  diff
+}
+
+fn has_browser_payload(manifest: &SyncManifest) -> bool {
+  manifest
+    .files
+    .iter()
+    .any(|file| file.path != "metadata.json")
+}
+
 impl ManifestDiff {
   pub fn is_empty(&self) -> bool {
     self.files_to_upload.is_empty()
@@ -457,12 +638,12 @@ impl ManifestDiff {
 
 /// Compute what needs to be synced between local and remote
 pub fn compute_diff(local: &SyncManifest, remote: Option<&SyncManifest>) -> ManifestDiff {
-  let mut diff = ManifestDiff::default();
-
   let Some(remote) = remote else {
     // No remote manifest - upload everything
-    diff.files_to_upload = local.files.clone();
-    return diff;
+    return ManifestDiff {
+      files_to_upload: local.files.clone(),
+      ..ManifestDiff::default()
+    };
   };
 
   // Build hash maps for quick lookup
@@ -475,13 +656,15 @@ pub fn compute_diff(local: &SyncManifest, remote: Option<&SyncManifest>) -> Mani
   // This prevents data loss when profile data files are deleted but metadata
   // survives — the newly generated manifest would have updated_at=NOW, which
   // would appear "newer" and cause all remote files to be deleted.
-  if local.files.is_empty() && !remote.files.is_empty() {
+  if !has_browser_payload(local) && has_browser_payload(remote) {
     log::info!(
       "Local manifest is empty but remote has {} files — downloading from remote to recover",
       remote.files.len()
     );
-    diff.files_to_download = remote.files.clone();
-    return diff;
+    return ManifestDiff {
+      files_to_download: remote.files.clone(),
+      ..ManifestDiff::default()
+    };
   }
 
   // Compare timestamps to determine direction
@@ -496,46 +679,53 @@ pub fn compute_diff(local: &SyncManifest, remote: Option<&SyncManifest>) -> Mani
   };
 
   if local_is_newer {
-    // Upload changed/new files, delete remote files that don't exist locally
-    for (path, local_entry) in &local_files {
-      match remote_files.get(path) {
-        Some(remote_entry) if remote_entry.hash != local_entry.hash => {
-          diff.files_to_upload.push((*local_entry).clone());
-        }
-        None => {
-          diff.files_to_upload.push((*local_entry).clone());
-        }
-        _ => {}
-      }
-    }
-
-    for path in remote_files.keys() {
-      if !local_files.contains_key(path) {
-        diff.files_to_delete_remote.push(path.to_string());
-      }
-    }
+    diff_local_to_remote(&local_files, &remote_files)
   } else {
-    // Download changed/new files, delete local files that don't exist remotely
-    for (path, remote_entry) in &remote_files {
-      match local_files.get(path) {
-        Some(local_entry) if local_entry.hash != remote_entry.hash => {
-          diff.files_to_download.push((*remote_entry).clone());
-        }
-        None => {
-          diff.files_to_download.push((*remote_entry).clone());
-        }
-        _ => {}
-      }
-    }
+    diff_remote_to_local(&local_files, &remote_files)
+  }
+}
 
-    for path in local_files.keys() {
-      if !remote_files.contains_key(path) {
-        diff.files_to_delete_local.push(path.to_string());
-      }
-    }
+/// Compute a three-way diff using the last successfully synchronized manifest
+/// as a baseline. With a profile lease, only one side should change at a time;
+/// this makes direction independent of wall-clock skew between devices.
+pub fn compute_diff_with_base(
+  local: &SyncManifest,
+  remote: Option<&SyncManifest>,
+  base: Option<&SyncManifest>,
+) -> ManifestDiff {
+  let Some(remote) = remote else {
+    return compute_diff(local, None);
+  };
+  if !has_browser_payload(local) && has_browser_payload(remote) {
+    return compute_diff(local, Some(remote));
+  }
+  if manifests_have_same_content(local, remote) {
+    return ManifestDiff::default();
   }
 
-  diff
+  let Some(base) = base else {
+    return compute_diff(local, Some(remote));
+  };
+  let local_changed = !manifests_have_same_content(local, base);
+  let remote_changed = !manifests_have_same_content(remote, base);
+  let local_files: HashMap<&str, &ManifestFileEntry> = local
+    .files
+    .iter()
+    .map(|file| (file.path.as_str(), file))
+    .collect();
+  let remote_files: HashMap<&str, &ManifestFileEntry> = remote
+    .files
+    .iter()
+    .map(|file| (file.path.as_str(), file))
+    .collect();
+
+  match (local_changed, remote_changed) {
+    (true, false) => diff_local_to_remote(&local_files, &remote_files),
+    (false, true) => diff_remote_to_local(&local_files, &remote_files),
+    // Both changed means an offline/concurrent edit escaped the supported
+    // single-writer lease flow. Preserve legacy last-write-wins behavior.
+    _ => compute_diff(local, Some(remote)),
+  }
 }
 
 /// Get the path to the hash cache file for a profile
@@ -603,6 +793,46 @@ mod tests {
     assert!(manifest.files.iter().any(|f| f.path == "file1.txt"));
     assert!(manifest.files.iter().any(|f| f.path == "file2.txt"));
     assert!(manifest.files.iter().any(|f| f.path == "subdir/file3.txt"));
+  }
+
+  #[test]
+  fn test_hash_cache_detects_same_size_rapid_rewrite() {
+    let temp_dir = TempDir::new().unwrap();
+    let profile_dir = temp_dir.path().join("profile");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let file = profile_dir.join("Cookies");
+    fs::write(&file, "aaaa").unwrap();
+
+    let mut cache = HashCache::default();
+    let before = generate_manifest("test-profile", &profile_dir, &mut cache).unwrap();
+    fs::write(&file, "bbbb").unwrap();
+    let after = generate_manifest("test-profile", &profile_dir, &mut cache).unwrap();
+
+    assert_ne!(before.files[0].hash, after.files[0].hash);
+  }
+
+  #[test]
+  fn test_directory_mtime_records_file_deletion() {
+    let temp_dir = TempDir::new().unwrap();
+    let profile_dir = temp_dir.path().join("profile");
+    let nested = profile_dir.join("Default");
+    fs::create_dir_all(&nested).unwrap();
+    let file = nested.join("obsolete.db");
+    fs::write(&file, "obsolete").unwrap();
+
+    let mut cache = HashCache::default();
+    let before = generate_manifest("test-profile", &profile_dir, &mut cache).unwrap();
+    // Some filesystems can assign the create and delete operations the same
+    // timestamp quantum. The three-way baseline tests cover that fast-path;
+    // this test specifically verifies that directory mtimes are incorporated.
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    fs::remove_file(file).unwrap();
+    let after = generate_manifest("test-profile", &profile_dir, &mut cache).unwrap();
+
+    assert!(
+      after.updated_at_datetime() > before.updated_at_datetime(),
+      "deleting a file must advance the manifest timestamp"
+    );
   }
 
   #[test]
@@ -830,7 +1060,12 @@ mod tests {
       generated_at: Utc::now().to_rfc3339(),
       updated_at: Utc::now().to_rfc3339(), // NOW — appears newer than remote
       exclude_globs: vec![],
-      files: vec![],
+      files: vec![ManifestFileEntry {
+        path: "metadata.json".to_string(),
+        size: 10,
+        mtime: 1000,
+        hash: "metadata".to_string(),
+      }],
       encrypted: false,
     };
 
@@ -944,6 +1179,112 @@ mod tests {
     assert_ne!(
       hash1, hash3,
       "Metadata hash should change when non-volatile fields change"
+    );
+  }
+
+  #[test]
+  fn test_base_manifest_beats_clock_skew_for_local_edit() {
+    let entry = |hash: &str| ManifestFileEntry {
+      path: "Cookies".to_string(),
+      size: 10,
+      mtime: 1,
+      hash: hash.to_string(),
+    };
+    let manifest = |updated_at: &str, hash: &str| SyncManifest {
+      version: 1,
+      profile_id: "test".to_string(),
+      generated_at: updated_at.to_string(),
+      updated_at: updated_at.to_string(),
+      exclude_globs: vec![],
+      files: vec![entry(hash)],
+      encrypted: false,
+    };
+
+    let base = manifest("2026-01-01T12:00:00Z", "base");
+    let remote = manifest("2026-01-01T12:00:00Z", "base");
+    // This device's wall clock is five minutes behind, but its file changed
+    // after the last successful handoff.
+    let local = manifest("2026-01-01T11:55:00Z", "local-edit");
+
+    let diff = compute_diff_with_base(&local, Some(&remote), Some(&base));
+    assert_eq!(diff.files_to_upload.len(), 1);
+    assert!(diff.files_to_download.is_empty());
+  }
+
+  #[test]
+  fn test_base_manifest_beats_clock_skew_for_remote_edit() {
+    let entry = |hash: &str| ManifestFileEntry {
+      path: "Cookies".to_string(),
+      size: 10,
+      mtime: 1,
+      hash: hash.to_string(),
+    };
+    let manifest = |updated_at: &str, hash: &str| SyncManifest {
+      version: 1,
+      profile_id: "test".to_string(),
+      generated_at: updated_at.to_string(),
+      updated_at: updated_at.to_string(),
+      exclude_globs: vec![],
+      files: vec![entry(hash)],
+      encrypted: false,
+    };
+
+    let base = manifest("2026-01-01T12:00:00Z", "base");
+    let local = manifest("2026-01-01T12:00:00Z", "base");
+    // The remote device's clock is behind, but its content is the only side
+    // that changed from the shared baseline.
+    let remote = manifest("2026-01-01T11:55:00Z", "remote-edit");
+
+    let diff = compute_diff_with_base(&local, Some(&remote), Some(&base));
+    assert_eq!(diff.files_to_download.len(), 1);
+    assert!(diff.files_to_upload.is_empty());
+  }
+
+  #[test]
+  fn manifest_generation_stops_immediately_when_launch_preempts_sync() {
+    let temp_dir = TempDir::new().unwrap();
+    fs::write(temp_dir.path().join("Cookies"), vec![7_u8; 1024]).unwrap();
+    let cancelled = AtomicBool::new(true);
+    let result = generate_manifest_cancellable(
+      "profile",
+      temp_dir.path(),
+      &mut HashCache::default(),
+      &cancelled,
+    );
+    assert!(matches!(result, Err(SyncError::Cancelled)));
+  }
+
+  #[test]
+  fn manifest_content_hash_tracks_only_the_committed_file_set() {
+    let mut first = SyncManifest::new("profile".to_string(), vec![]);
+    first.files = vec![
+      ManifestFileEntry {
+        path: "b".to_string(),
+        size: 2,
+        mtime: 10,
+        hash: "hash-b".to_string(),
+      },
+      ManifestFileEntry {
+        path: "a".to_string(),
+        size: 1,
+        mtime: 20,
+        hash: "hash-a".to_string(),
+      },
+    ];
+    let mut equivalent = first.clone();
+    equivalent.generated_at = "different".to_string();
+    equivalent.updated_at = "different".to_string();
+    equivalent.files.reverse();
+    equivalent.files[0].mtime = 999;
+
+    assert_eq!(
+      manifest_content_hash(&first),
+      manifest_content_hash(&equivalent)
+    );
+    equivalent.files[0].hash = "changed".to_string();
+    assert_ne!(
+      manifest_content_hash(&first),
+      manifest_content_hash(&equivalent)
     );
   }
 }

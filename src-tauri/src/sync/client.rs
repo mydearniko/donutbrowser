@@ -1,19 +1,51 @@
 use super::types::*;
-use reqwest::Client;
+use futures_util::TryStreamExt;
+use reqwest::{Client, RequestBuilder};
+use std::path::Path;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::OnceCell;
+use tokio_util::io::{ReaderStream, StreamReader};
+
+const SYNC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const SYNC_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const SYNC_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn build_sync_http_client(read_timeout: Duration) -> Client {
+  Client::builder()
+    .pool_max_idle_per_host(128)
+    .tcp_nodelay(true)
+    .http2_adaptive_window(true)
+    .connect_timeout(SYNC_CONNECT_TIMEOUT)
+    // Unlike a total request timeout, this resets whenever data arrives, so
+    // large profile transfers can run for as long as needed while a dead
+    // connection cannot leave sync (or profile launch) waiting forever.
+    .read_timeout(read_timeout)
+    .build()
+    .expect("failed to create sync HTTP client")
+}
+
+static SYNC_HTTP_CLIENT: LazyLock<Client> =
+  LazyLock::new(|| build_sync_http_client(SYNC_READ_TIMEOUT));
 
 #[derive(Clone)]
 pub struct SyncClient {
   client: Client,
   base_url: String,
   token: String,
+  client_id: String,
+  capabilities: Arc<OnceCell<SyncCapabilities>>,
 }
 
 impl SyncClient {
   pub fn new(base_url: String, token: String) -> Self {
     Self {
-      client: Client::new(),
+      client: SYNC_HTTP_CLIENT.clone(),
       base_url: base_url.trim_end_matches('/').to_string(),
       token,
+      client_id: super::sync_client_id(),
+      capabilities: Arc::new(OnceCell::new()),
     }
   }
 
@@ -21,11 +53,126 @@ impl SyncClient {
     format!("{}/v1/objects/{}", self.base_url, path)
   }
 
+  fn storage_url(&self, path: &str) -> String {
+    format!("{}/v1/storage/{}", self.base_url, path)
+  }
+
+  fn authenticated(&self, request: RequestBuilder) -> RequestBuilder {
+    request
+      .bearer_auth(&self.token)
+      .header("X-Donut-Sync-Client", &self.client_id)
+  }
+
+  fn authenticated_control(&self, request: RequestBuilder) -> RequestBuilder {
+    self
+      .authenticated(request)
+      .timeout(SYNC_CONTROL_REQUEST_TIMEOUT)
+  }
+
+  pub async fn capabilities(&self) -> SyncCapabilities {
+    self
+      .capabilities
+      .get_or_init(|| async {
+        let response = match self
+          .authenticated_control(self.client.get(self.url("capabilities")))
+          .send()
+          .await
+        {
+          Ok(response) if response.status().is_success() => response,
+          Ok(response) => {
+            log::debug!(
+              "Sync server does not advertise bulk transfer ({})",
+              response.status()
+            );
+            return SyncCapabilities::default();
+          }
+          Err(error) => {
+            log::debug!("Failed to query sync server capabilities: {error}");
+            return SyncCapabilities::default();
+          }
+        };
+        response.json().await.unwrap_or_default()
+      })
+      .await
+      .clone()
+  }
+
+  pub async fn upload_bundle(
+    &self,
+    prefix: &str,
+    archive_path: &Path,
+  ) -> SyncResult<BulkTransferResponse> {
+    let file = tokio::fs::File::open(archive_path)
+      .await
+      .map_err(|error| SyncError::IoError(error.to_string()))?;
+    let size = file
+      .metadata()
+      .await
+      .map_err(|error| SyncError::IoError(error.to_string()))?
+      .len();
+    let body = reqwest::Body::wrap_stream(ReaderStream::new(file));
+    let response = self
+      .authenticated(self.client.put(format!(
+        "{}?prefix={}",
+        self.storage_url("upload-bundle"),
+        urlencoding::encode(prefix)
+      )))
+      .header("Content-Type", "application/gzip")
+      .header("Content-Length", size)
+      .body(body)
+      .send()
+      .await
+      .map_err(|error| SyncError::NetworkError(error.to_string()))?;
+    if !response.status().is_success() {
+      let status = response.status();
+      let body = response.text().await.unwrap_or_default();
+      return Err(SyncError::NetworkError(format!(
+        "Bulk upload failed with status {status}: {body}"
+      )));
+    }
+    response
+      .json()
+      .await
+      .map_err(|error| SyncError::SerializationError(error.to_string()))
+  }
+
+  pub async fn download_bundle(
+    &self,
+    prefix: &str,
+    paths: &[String],
+    archive_path: &Path,
+  ) -> SyncResult<()> {
+    let response = self
+      .authenticated(self.client.post(self.storage_url("download-bundle")))
+      .json(&serde_json::json!({ "prefix": prefix, "paths": paths }))
+      .send()
+      .await
+      .map_err(|error| SyncError::NetworkError(error.to_string()))?;
+    if !response.status().is_success() {
+      let status = response.status();
+      let body = response.text().await.unwrap_or_default();
+      return Err(SyncError::NetworkError(format!(
+        "Bulk download failed with status {status}: {body}"
+      )));
+    }
+
+    let stream = response.bytes_stream().map_err(std::io::Error::other);
+    let mut reader = StreamReader::new(stream);
+    let mut destination = tokio::fs::File::create(archive_path)
+      .await
+      .map_err(|error| SyncError::IoError(error.to_string()))?;
+    tokio::io::copy(&mut reader, &mut destination)
+      .await
+      .map_err(|error| SyncError::NetworkError(error.to_string()))?;
+    destination
+      .flush()
+      .await
+      .map_err(|error| SyncError::IoError(error.to_string()))
+  }
+
   pub async fn stat(&self, key: &str) -> SyncResult<StatResponse> {
     let response = self
-      .client
-      .post(self.url("stat"))
-      .header("Authorization", format!("Bearer {}", self.token))
+      .authenticated_control(self.client.post(self.url("stat")))
       .json(&StatRequest {
         key: key.to_string(),
       })
@@ -66,9 +213,7 @@ impl SyncClient {
     metadata: Option<std::collections::HashMap<String, String>>,
   ) -> SyncResult<PresignUploadResponse> {
     let response = self
-      .client
-      .post(self.url("presign-upload"))
-      .header("Authorization", format!("Bearer {}", self.token))
+      .authenticated_control(self.client.post(self.url("presign-upload")))
       .json(&PresignUploadRequest {
         key: key.to_string(),
         content_type: content_type.map(|s| s.to_string()),
@@ -93,9 +238,7 @@ impl SyncClient {
 
   pub async fn presign_download(&self, key: &str) -> SyncResult<PresignDownloadResponse> {
     let response = self
-      .client
-      .post(self.url("presign-download"))
-      .header("Authorization", format!("Bearer {}", self.token))
+      .authenticated_control(self.client.post(self.url("presign-download")))
       .json(&PresignDownloadRequest {
         key: key.to_string(),
         expires_in: Some(3600),
@@ -118,9 +261,7 @@ impl SyncClient {
 
   pub async fn delete(&self, key: &str, tombstone_key: Option<&str>) -> SyncResult<DeleteResponse> {
     let response = self
-      .client
-      .post(self.url("delete"))
-      .header("Authorization", format!("Bearer {}", self.token))
+      .authenticated(self.client.post(self.url("delete")))
       .json(&DeleteRequest {
         key: key.to_string(),
         tombstone_key: tombstone_key.map(|s| s.to_string()),
@@ -146,15 +287,38 @@ impl SyncClient {
     self.list_page(prefix, None).await
   }
 
+  pub async fn list_profile_manifests(&self, prefix: &str) -> SyncResult<Vec<ListObject>> {
+    let response = self
+      .authenticated(self.client.post(self.url("profile-manifests")))
+      .json(&ListRequest {
+        prefix: prefix.to_string(),
+        max_keys: None,
+        continuation_token: None,
+      })
+      .send()
+      .await
+      .map_err(|error| SyncError::NetworkError(error.to_string()))?;
+    if !response.status().is_success() {
+      let status = response.status();
+      let body = response.text().await.unwrap_or_default();
+      return Err(SyncError::NetworkError(format!(
+        "Profile manifest index failed with status {status}: {body}"
+      )));
+    }
+    let response: ListResponse = response
+      .json()
+      .await
+      .map_err(|error| SyncError::SerializationError(error.to_string()))?;
+    Ok(response.objects)
+  }
+
   async fn list_page(
     &self,
     prefix: &str,
     continuation_token: Option<String>,
   ) -> SyncResult<ListResponse> {
     let response = self
-      .client
-      .post(self.url("list"))
-      .header("Authorization", format!("Bearer {}", self.token))
+      .authenticated(self.client.post(self.url("list")))
       .json(&ListRequest {
         prefix: prefix.to_string(),
         max_keys: Some(1000),
@@ -276,7 +440,7 @@ impl SyncClient {
     &self,
     items: Vec<(String, Option<String>)>,
   ) -> SyncResult<PresignUploadBatchResponse> {
-    let chunk_size = 500;
+    let chunk_size = 1000;
     let mut all_items = Vec::new();
 
     for chunk in items.chunks(chunk_size) {
@@ -292,9 +456,7 @@ impl SyncClient {
       };
 
       let response = self
-        .client
-        .post(self.url("presign-upload-batch"))
-        .header("Authorization", format!("Bearer {}", self.token))
+        .authenticated_control(self.client.post(self.url("presign-upload-batch")))
         .json(&request)
         .send()
         .await
@@ -321,7 +483,7 @@ impl SyncClient {
     &self,
     keys: Vec<String>,
   ) -> SyncResult<PresignDownloadBatchResponse> {
-    let chunk_size = 500;
+    let chunk_size = 1000;
     let mut all_items = Vec::new();
 
     for chunk in keys.chunks(chunk_size) {
@@ -331,9 +493,7 @@ impl SyncClient {
       };
 
       let response = self
-        .client
-        .post(self.url("presign-download-batch"))
-        .header("Authorization", format!("Bearer {}", self.token))
+        .authenticated_control(self.client.post(self.url("presign-download-batch")))
         .json(&request)
         .send()
         .await
@@ -362,9 +522,7 @@ impl SyncClient {
     tombstone_key: Option<&str>,
   ) -> SyncResult<DeletePrefixResponse> {
     let response = self
-      .client
-      .post(self.url("delete-prefix"))
-      .header("Authorization", format!("Bearer {}", self.token))
+      .authenticated(self.client.post(self.url("delete-prefix")))
       .json(&DeletePrefixRequest {
         prefix: prefix.to_string(),
         tombstone_key: tombstone_key.map(|s| s.to_string()),
@@ -384,5 +542,30 @@ impl SyncClient {
       .json()
       .await
       .map_err(|e| SyncError::SerializationError(e.to_string()))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[tokio::test]
+  async fn stalled_sync_response_hits_the_read_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+      let (_socket, _) = listener.accept().await.unwrap();
+      tokio::time::sleep(Duration::from_secs(2)).await;
+    });
+    let client = build_sync_http_client(Duration::from_millis(100));
+
+    let error = client
+      .get(format!("http://{address}/stall"))
+      .send()
+      .await
+      .unwrap_err();
+
+    assert!(error.is_timeout(), "unexpected error: {error}");
+    server.abort();
   }
 }

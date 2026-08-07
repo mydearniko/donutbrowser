@@ -118,7 +118,7 @@ type TabsContentProps = React.ComponentProps<typeof TabsPrimitive.Content> &
 function TabsContent({
   value,
   forceMount,
-  transition = { duration: 0.5, ease: "easeInOut" },
+  transition = { duration: 0.06, ease: "easeOut" },
   className,
   ...props
 }: TabsContentProps) {
@@ -129,9 +129,9 @@ function TabsContent({
           data-slot="tabs-content"
           layout
           layoutDependency={value}
-          initial={{ opacity: 0, filter: "blur(4px)" }}
+          initial={{ opacity: 0, filter: "blur(1px)" }}
           animate={{ opacity: 1, filter: "blur(0px)" }}
-          exit={{ opacity: 0, filter: "blur(4px)" }}
+          exit={{ opacity: 0, filter: "blur(1px)" }}
           transition={transition}
           className={cn(
             "mt-2 ring-offset-background focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none",

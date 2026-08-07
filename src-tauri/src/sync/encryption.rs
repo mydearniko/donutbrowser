@@ -22,6 +22,8 @@ const E2E_FILE_VERSION: u8 = 1;
 type DerivedKeyCache = HashMap<([u8; 32], String), [u8; 32]>;
 static KEY_CACHE: std::sync::LazyLock<Mutex<DerivedKeyCache>> =
   std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static VAULT_KEY_CACHE: std::sync::LazyLock<Mutex<HashMap<String, [u8; 32]>>> =
+  std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn password_fingerprint(pwd: &str) -> [u8; 32] {
   use sha2::{Digest, Sha256};
@@ -39,6 +41,12 @@ fn invalidate_key_cache() {
   }
 }
 
+fn invalidate_vault_key_cache() {
+  if let Ok(mut cache) = VAULT_KEY_CACHE.lock() {
+    cache.clear();
+  }
+}
+
 fn get_e2e_password_path() -> std::path::PathBuf {
   crate::app_dirs::settings_dir().join("e2e_password.dat")
 }
@@ -47,28 +55,42 @@ fn get_vault_password() -> String {
   env!("DONUT_BROWSER_VAULT_PASSWORD").to_string()
 }
 
+fn derive_vault_key(salt: &SaltString) -> Result<[u8; 32], String> {
+  let cache_key = salt.as_str().to_string();
+  if let Ok(cache) = VAULT_KEY_CACHE.lock() {
+    if let Some(key) = cache.get(&cache_key) {
+      return Ok(*key);
+    }
+  }
+
+  let vault_password = get_vault_password();
+  let password_hash = Argon2::default()
+    .hash_password(vault_password.as_bytes(), salt)
+    .map_err(|e| format!("Argon2 key derivation failed: {e}"))?;
+  let hash_value = password_hash.hash.unwrap();
+  let key: [u8; 32] = hash_value.as_bytes()[..32]
+    .try_into()
+    .map_err(|_| "Invalid key length")?;
+
+  if let Ok(mut cache) = VAULT_KEY_CACHE.lock() {
+    cache.insert(cache_key, key);
+  }
+  Ok(key)
+}
+
 pub fn store_e2e_password(password: &str) -> Result<(), String> {
   invalidate_key_cache();
+  invalidate_vault_key_cache();
   let file_path = get_e2e_password_path();
 
   if let Some(parent) = file_path.parent() {
     std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
   }
 
-  let vault_password = get_vault_password();
   let salt_bytes: [u8; 16] = rand::rng().random();
   let salt =
     SaltString::encode_b64(&salt_bytes).map_err(|e| format!("Failed to encode salt: {e}"))?;
-  let argon2 = Argon2::default();
-  let password_hash = argon2
-    .hash_password(vault_password.as_bytes(), &salt)
-    .map_err(|e| format!("Argon2 key derivation failed: {e}"))?;
-  let hash_value = password_hash.hash.unwrap();
-  let hash_bytes = hash_value.as_bytes();
-
-  let key_bytes: [u8; 32] = hash_bytes[..32]
-    .try_into()
-    .map_err(|_| "Invalid key length")?;
+  let key_bytes = derive_vault_key(&salt)?;
   let key = Key::<Aes256Gcm>::from(key_bytes);
   let cipher = Aes256Gcm::new(&key);
   let nonce_bytes: [u8; 12] = rand::rng().random();
@@ -156,17 +178,7 @@ pub fn load_e2e_password() -> Result<Option<String>, String> {
   }
   let ciphertext = &file_data[offset..offset + ciphertext_len];
 
-  let vault_password = get_vault_password();
-  let argon2 = Argon2::default();
-  let password_hash = argon2
-    .hash_password(vault_password.as_bytes(), &salt)
-    .map_err(|e| format!("Argon2 key derivation failed: {e}"))?;
-  let hash_value = password_hash.hash.unwrap();
-  let hash_bytes = hash_value.as_bytes();
-
-  let key_bytes: [u8; 32] = hash_bytes[..32]
-    .try_into()
-    .map_err(|_| "Invalid key length")?;
+  let key_bytes = derive_vault_key(&salt)?;
   let key = Key::<Aes256Gcm>::from(key_bytes);
   let cipher = Aes256Gcm::new(&key);
 
@@ -186,6 +198,7 @@ pub fn has_e2e_password() -> bool {
 
 pub fn remove_e2e_password() -> Result<(), String> {
   invalidate_key_cache();
+  invalidate_vault_key_cache();
   let file_path = get_e2e_password_path();
   if file_path.exists() {
     std::fs::remove_file(&file_path)

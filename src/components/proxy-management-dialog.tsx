@@ -4,7 +4,9 @@ import {
   type ColumnDef,
   flexRender,
   getCoreRowModel,
+  getPaginationRowModel,
   getSortedRowModel,
+  type PaginationState,
   type RowSelectionState,
   type SortingState,
   useReactTable,
@@ -16,12 +18,18 @@ import { useTranslation } from "react-i18next";
 import { GoPlus } from "react-icons/go";
 import {
   LuChevronDown,
+  LuChevronLeft,
+  LuChevronRight,
   LuChevronUp,
+  LuClipboard,
   LuDownload,
+  LuGauge,
   LuPencil,
   LuRefreshCw,
+  LuSearch,
   LuTrash2,
   LuUpload,
+  LuX,
 } from "react-icons/lu";
 import { toast } from "sonner";
 import {
@@ -52,6 +60,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { FadingScrollArea } from "@/components/ui/fading-scroll-area";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -70,7 +86,12 @@ import { useVpnEvents } from "@/hooks/use-vpn-events";
 import { parseBackendError, translateBackendError } from "@/lib/backend-errors";
 import { showErrorToast, showSuccessToast } from "@/lib/toast-utils";
 import { cn } from "@/lib/utils";
-import type { ProxyCheckResult, StoredProxy, VpnConfig } from "@/types";
+import type {
+  ProxyCheckResult,
+  ProxyManagementSnapshot,
+  StoredProxy,
+  VpnConfig,
+} from "@/types";
 import { ProxyCheckButton } from "./proxy-check-button";
 import { RippleButton } from "./ui/ripple";
 import { VpnCheckButton } from "./vpn-check-button";
@@ -78,6 +99,52 @@ import { VpnFormDialog } from "./vpn-form-dialog";
 import { VpnImportDialog } from "./vpn-import-dialog";
 
 type SyncStatus = "disabled" | "syncing" | "synced" | "error" | "waiting";
+type ProxyListFilter =
+  | "all"
+  | "working"
+  | "failed"
+  | "unchecked"
+  | "used"
+  | "unused";
+
+const PROXY_BULK_CONCURRENCY = 6;
+
+async function runConcurrently<T, R>(
+  items: T[],
+  task: (item: T) => Promise<R>,
+  concurrency = PROXY_BULK_CONCURRENCY,
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = {
+          status: "fulfilled",
+          value: await task(items[index]),
+        };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, async () =>
+      worker(),
+    ),
+  );
+  return results;
+}
+
+function proxyConnectionUrl(proxy: StoredProxy): string {
+  const settings = proxy.proxy_settings;
+  const credentials = settings.username
+    ? `${encodeURIComponent(settings.username)}:${encodeURIComponent(settings.password ?? "")}@`
+    : "";
+  return `${settings.proxy_type}://${credentials}${settings.host}:${settings.port}`;
+}
 
 function getSyncStatusDot(
   item: { sync_enabled?: boolean; last_sync?: number },
@@ -160,6 +227,9 @@ export function ProxyManagementDialog({
     Record<string, string>
   >({});
   const [proxyInUse, setProxyInUse] = useState<Record<string, boolean>>({});
+  const [snapshotProxyUsage, setSnapshotProxyUsage] = useState<
+    Record<string, number>
+  >({});
   const [isTogglingSync, setIsTogglingSync] = useState<Record<string, boolean>>(
     {},
   );
@@ -188,6 +258,15 @@ export function ProxyManagementDialog({
   ]);
   const [proxiesRowSelection, setProxiesRowSelection] =
     useState<RowSelectionState>({});
+  const [proxiesPagination, setProxiesPagination] = useState<PaginationState>({
+    pageIndex: 0,
+    pageSize: 100,
+  });
+  const [proxyQuery, setProxyQuery] = useState("");
+  const [proxyListFilter, setProxyListFilter] =
+    useState<ProxyListFilter>("all");
+  const [proxyProtocolFilter, setProxyProtocolFilter] = useState("all");
+  const [isBulkCheckingProxies, setIsBulkCheckingProxies] = useState(false);
   const [vpnsSorting, setVpnsSorting] = useState<SortingState>([
     { id: "name", desc: false },
   ]);
@@ -216,7 +295,11 @@ export function ProxyManagementDialog({
   const [showBulkDeleteVpnsDialog, setShowBulkDeleteVpnsDialog] =
     useState(false);
 
-  const { storedProxies: rawProxies, proxyUsage, isLoading } = useProxyEvents();
+  const {
+    storedProxies: rawProxies,
+    proxyUsage: eventProxyUsage,
+    isLoading,
+  } = useProxyEvents();
   const { vpnConfigs, vpnUsage, isLoading: isLoadingVpns } = useVpnEvents();
 
   // Filter out cloud-managed and cloud-derived proxies (cloud proxies are
@@ -288,37 +371,120 @@ export function ProxyManagementDialog({
     };
   }, []);
 
-  // Load cached check results on mount and when proxies change
+  // Load every per-proxy cache/sync-lock value in one IPC call. This remains
+  // fast with thousands of proxies and scans profile metadata only once.
   useEffect(() => {
-    const loadCachedResults = async () => {
-      const results: Record<string, ProxyCheckResult> = {};
-      const inUse: Record<string, boolean> = {};
-      for (const proxy of storedProxies) {
-        try {
-          const cached = await invoke<ProxyCheckResult | null>(
-            "get_cached_proxy_check",
-            { proxyId: proxy.id },
-          );
-          if (cached) {
-            results[proxy.id] = cached;
-          }
-
-          const inUseBySynced = await invoke<boolean>(
-            "is_proxy_in_use_by_synced_profile",
-            { proxyId: proxy.id },
-          );
-          inUse[proxy.id] = inUseBySynced;
-        } catch (_error) {
-          // Ignore errors
-        }
-      }
-      setProxyCheckResults(results);
-      setProxyInUse(inUse);
-    };
-    if (storedProxies.length > 0) {
-      void loadCachedResults();
+    let cancelled = false;
+    if (storedProxies.length === 0) {
+      setProxyCheckResults({});
+      setProxyInUse({});
+      setSnapshotProxyUsage({});
+      return;
     }
+
+    void invoke<ProxyManagementSnapshot>("get_proxy_management_snapshot", {
+      proxyIds: storedProxies.map((proxy) => proxy.id),
+    })
+      .then((snapshot) => {
+        if (cancelled) return;
+        setProxyCheckResults(snapshot.cached_checks);
+        setProxyInUse(
+          Object.fromEntries(snapshot.synced_in_use.map((id) => [id, true])),
+        );
+        setSnapshotProxyUsage(snapshot.usage);
+      })
+      .catch((error: unknown) => {
+        console.error("Failed to load proxy management snapshot:", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [storedProxies]);
+
+  const proxyUsage = useMemo(
+    () => ({ ...snapshotProxyUsage, ...eventProxyUsage }),
+    [eventProxyUsage, snapshotProxyUsage],
+  );
+
+  const availableProxyProtocols = useMemo(
+    () =>
+      Array.from(
+        new Set(storedProxies.map((proxy) => proxy.proxy_settings.proxy_type)),
+      ).sort((a, b) => a.localeCompare(b)),
+    [storedProxies],
+  );
+
+  const filteredProxies = useMemo(() => {
+    const tokens = proxyQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+    return storedProxies.filter((proxy) => {
+      if (
+        proxyProtocolFilter !== "all" &&
+        proxy.proxy_settings.proxy_type !== proxyProtocolFilter
+      ) {
+        return false;
+      }
+
+      const result = proxyCheckResults[proxy.id];
+      const usage = proxyUsage[proxy.id] ?? 0;
+      if (proxyListFilter === "working" && result?.is_valid !== true)
+        return false;
+      if (proxyListFilter === "failed" && result?.is_valid !== false)
+        return false;
+      if (proxyListFilter === "unchecked" && result) return false;
+      if (proxyListFilter === "used" && usage === 0) return false;
+      if (proxyListFilter === "unused" && usage > 0) return false;
+
+      if (tokens.length === 0) return true;
+      const settings = proxy.proxy_settings;
+      const searchable = [
+        proxy.name,
+        settings.proxy_type,
+        settings.host,
+        String(settings.port),
+        settings.username ?? "",
+        proxy.geo_country ?? "",
+        proxy.geo_region ?? "",
+        proxy.geo_city ?? "",
+        proxy.geo_isp ?? "",
+        result?.ip ?? "",
+        result?.country ?? "",
+        result?.city ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return tokens.every((token) => searchable.includes(token));
+    });
+  }, [
+    proxyCheckResults,
+    proxyListFilter,
+    proxyProtocolFilter,
+    proxyQuery,
+    proxyUsage,
+    storedProxies,
+  ]);
+
+  const proxyHealthCounts = useMemo(() => {
+    let working = 0;
+    let failed = 0;
+    for (const proxy of storedProxies) {
+      const result = proxyCheckResults[proxy.id];
+      if (result?.is_valid) working += 1;
+      else if (result) failed += 1;
+    }
+    return {
+      working,
+      failed,
+      unchecked: storedProxies.length - working - failed,
+      used: storedProxies.filter((proxy) => (proxyUsage[proxy.id] ?? 0) > 0)
+        .length,
+    };
+  }, [proxyCheckResults, proxyUsage, storedProxies]);
+
+  useEffect(() => {
+    setProxiesPagination((current) => ({ ...current, pageIndex: 0 }));
+  }, []);
 
   // Load VPN in-use status
   useEffect(() => {
@@ -559,9 +725,25 @@ export function ProxyManagementDialog({
       },
       {
         id: "protocol",
+        accessorFn: (proxy) => proxy.proxy_settings.proxy_type,
         size: 96,
-        enableSorting: false,
-        header: () => t("proxies.management.protocolCol"),
+        enableSorting: true,
+        header: ({ column }) => (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              column.toggleSorting(column.getIsSorted() === "asc");
+            }}
+            className="h-auto cursor-pointer justify-start p-0 text-left font-semibold"
+          >
+            {t("proxies.management.protocolCol")}
+            {column.getIsSorted() === "asc" ? (
+              <LuChevronUp className="ml-2 size-4" />
+            ) : column.getIsSorted() === "desc" ? (
+              <LuChevronDown className="ml-2 size-4" />
+            ) : null}
+          </Button>
+        ),
         cell: ({ row }) => (
           <span className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
             {row.original.proxy_settings.proxy_type}
@@ -570,8 +752,25 @@ export function ProxyManagementDialog({
       },
       {
         id: "hostPort",
-        enableSorting: false,
-        header: () => t("proxies.management.hostPort"),
+        accessorFn: (proxy) =>
+          `${proxy.proxy_settings.host}:${proxy.proxy_settings.port}`,
+        enableSorting: true,
+        header: ({ column }) => (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              column.toggleSorting(column.getIsSorted() === "asc");
+            }}
+            className="h-auto cursor-pointer justify-start p-0 text-left font-semibold"
+          >
+            {t("proxies.management.hostPort")}
+            {column.getIsSorted() === "asc" ? (
+              <LuChevronUp className="ml-2 size-4" />
+            ) : column.getIsSorted() === "desc" ? (
+              <LuChevronDown className="ml-2 size-4" />
+            ) : null}
+          </Button>
+        ),
         cell: ({ row }) => (
           <span className="block truncate font-mono text-xs text-muted-foreground">
             {row.original.proxy_settings.host}:
@@ -581,9 +780,25 @@ export function ProxyManagementDialog({
       },
       {
         id: "usage",
+        accessorFn: (proxy) => proxyUsage[proxy.id] ?? 0,
         size: 80,
-        enableSorting: false,
-        header: () => t("proxies.management.usage"),
+        enableSorting: true,
+        header: ({ column }) => (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              column.toggleSorting(column.getIsSorted() === "asc");
+            }}
+            className="h-auto cursor-pointer justify-start p-0 text-left font-semibold"
+          >
+            {t("proxies.management.usage")}
+            {column.getIsSorted() === "asc" ? (
+              <LuChevronUp className="ml-2 size-4" />
+            ) : column.getIsSorted() === "desc" ? (
+              <LuChevronDown className="ml-2 size-4" />
+            ) : null}
+          </Button>
+        ),
         cell: ({ row }) => (
           <Badge variant="secondary">{proxyUsage[row.original.id] ?? 0}</Badge>
         ),
@@ -636,6 +851,7 @@ export function ProxyManagementDialog({
                 profileId={proxy.id}
                 checkingProfileId={checkingProxyId}
                 cachedResult={proxyCheckResults[proxy.id]}
+                disabled={isBulkCheckingProxies}
                 setCheckingProfileId={setCheckingProxyId}
                 onCheckComplete={(result) => {
                   setProxyCheckResults((prev) => ({
@@ -668,27 +884,24 @@ export function ProxyManagementDialog({
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        handleDeleteProxy(proxy);
-                      }}
-                      disabled={(proxyUsage[proxy.id] ?? 0) > 0}
-                    >
-                      <LuTrash2 className="size-4" />
-                    </Button>
-                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      handleDeleteProxy(proxy);
+                    }}
+                  >
+                    <LuTrash2 className="size-4" />
+                  </Button>
                 </TooltipTrigger>
                 <TooltipContent>
                   {(proxyUsage[proxy.id] ?? 0) > 0 ? (
                     <p>
                       {(proxyUsage[proxy.id] ?? 0) === 1
-                        ? t("proxies.management.cannotDelete_one", {
+                        ? t("proxies.management.deleteUnlinks_one", {
                             count: proxyUsage[proxy.id],
                           })
-                        : t("proxies.management.cannotDelete_other", {
+                        : t("proxies.management.deleteUnlinks_other", {
                             count: proxyUsage[proxy.id],
                           })}
                     </p>
@@ -711,6 +924,7 @@ export function ProxyManagementDialog({
       proxyInUse,
       checkingProxyId,
       proxyCheckResults,
+      isBulkCheckingProxies,
       handleToggleSync,
       handleEditProxy,
       handleDeleteProxy,
@@ -718,17 +932,20 @@ export function ProxyManagementDialog({
   );
 
   const proxiesTable = useReactTable({
-    data: storedProxies,
+    data: filteredProxies,
     columns: proxyColumns,
     state: {
       sorting: proxiesSorting,
       rowSelection: proxiesRowSelection,
+      pagination: proxiesPagination,
     },
     onSortingChange: setProxiesSorting,
     onRowSelectionChange: setProxiesRowSelection,
+    onPaginationChange: setProxiesPagination,
     enableRowSelection: (row) => !proxyInUse[row.original.id],
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
     getRowId: (row) => row.id,
   });
 
@@ -963,15 +1180,28 @@ export function ProxyManagementDialog({
   const selectedVpns = vpnsTable
     .getFilteredSelectedRowModel()
     .rows.map((row) => row.original);
+  const proxyPageCount = Math.max(proxiesTable.getPageCount(), 1);
+  const proxyRangeStart =
+    filteredProxies.length === 0
+      ? 0
+      : proxiesPagination.pageIndex * proxiesPagination.pageSize + 1;
+  const proxyRangeEnd = Math.min(
+    filteredProxies.length,
+    (proxiesPagination.pageIndex + 1) * proxiesPagination.pageSize,
+  );
+
+  useEffect(() => {
+    if (proxiesPagination.pageIndex >= proxyPageCount) {
+      proxiesTable.setPageIndex(proxyPageCount - 1);
+    }
+  }, [proxiesPagination.pageIndex, proxiesTable, proxyPageCount]);
 
   const handleBulkDeleteProxies = useCallback(async () => {
     if (selectedProxies.length === 0) return;
     setIsBulkDeletingProxies(true);
     try {
-      const results = await Promise.allSettled(
-        selectedProxies.map((proxy) =>
-          invoke("delete_stored_proxy", { proxyId: proxy.id }),
-        ),
+      const results = await runConcurrently(selectedProxies, (proxy) =>
+        invoke("delete_stored_proxy", { proxyId: proxy.id }),
       );
       const failed = results.filter((r) => r.status === "rejected").length;
       const succeeded = results.length - failed;
@@ -993,10 +1223,8 @@ export function ProxyManagementDialog({
     if (selectedVpns.length === 0) return;
     setIsBulkDeletingVpns(true);
     try {
-      const results = await Promise.allSettled(
-        selectedVpns.map((vpn) =>
-          invoke("delete_vpn_config", { vpnId: vpn.id }),
-        ),
+      const results = await runConcurrently(selectedVpns, (vpn) =>
+        invoke("delete_vpn_config", { vpnId: vpn.id }),
       );
       const failed = results.filter((r) => r.status === "rejected").length;
       const succeeded = results.length - failed;
@@ -1025,13 +1253,11 @@ export function ProxyManagementDialog({
       targetEnabled ? !p.sync_enabled : p.sync_enabled && !proxyInUse[p.id],
     );
     if (targets.length === 0) return;
-    const results = await Promise.allSettled(
-      targets.map((proxy) =>
-        invoke("set_proxy_sync_enabled", {
-          proxyId: proxy.id,
-          enabled: targetEnabled,
-        }),
-      ),
+    const results = await runConcurrently(targets, (proxy) =>
+      invoke("set_proxy_sync_enabled", {
+        proxyId: proxy.id,
+        enabled: targetEnabled,
+      }),
     );
     const firstRejection = results.find((r) => r.status === "rejected") as
       | PromiseRejectedResult
@@ -1060,13 +1286,11 @@ export function ProxyManagementDialog({
       targetEnabled ? !v.sync_enabled : v.sync_enabled && !vpnInUse[v.id],
     );
     if (targets.length === 0) return;
-    const results = await Promise.allSettled(
-      targets.map((vpn) =>
-        invoke("set_vpn_sync_enabled", {
-          vpnId: vpn.id,
-          enabled: targetEnabled,
-        }),
-      ),
+    const results = await runConcurrently(targets, (vpn) =>
+      invoke("set_vpn_sync_enabled", {
+        vpnId: vpn.id,
+        enabled: targetEnabled,
+      }),
     );
     const firstRejection = results.find((r) => r.status === "rejected") as
       | PromiseRejectedResult
@@ -1086,6 +1310,65 @@ export function ProxyManagementDialog({
     }
     await emit("vpn-configs-changed");
   }, [selectedVpns, vpnInUse, t]);
+
+  const handleBulkCheckProxies = useCallback(async () => {
+    if (selectedProxies.length === 0 || isBulkCheckingProxies) return;
+    setIsBulkCheckingProxies(true);
+    try {
+      const results = await runConcurrently(selectedProxies, (proxy) =>
+        invoke<ProxyCheckResult>("check_proxy_validity", {
+          proxyId: proxy.id,
+          proxySettings: proxy.proxy_settings,
+        }),
+      );
+      const failedResult = (): ProxyCheckResult => ({
+        ip: "",
+        timestamp: Math.floor(Date.now() / 1000),
+        is_valid: false,
+      });
+      const nextResults: Record<string, ProxyCheckResult> = {};
+      let working = 0;
+      results.forEach((result, index) => {
+        const checked =
+          result.status === "fulfilled" ? result.value : failedResult();
+        nextResults[selectedProxies[index].id] = checked;
+        if (checked.is_valid) working += 1;
+      });
+      setProxyCheckResults((current) => ({ ...current, ...nextResults }));
+      toast.success(
+        t("proxies.management.bulkCheckResult", {
+          count: results.length,
+          working,
+          failed: results.length - working,
+        }),
+      );
+    } finally {
+      setIsBulkCheckingProxies(false);
+    }
+  }, [isBulkCheckingProxies, selectedProxies, t]);
+
+  const handleCopySelectedProxies = useCallback(async () => {
+    if (selectedProxies.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(
+        selectedProxies.map(proxyConnectionUrl).join("\n"),
+      );
+      toast.success(
+        t("proxies.management.copiedSelected", {
+          count: selectedProxies.length,
+        }),
+      );
+    } catch (error) {
+      console.error("Failed to copy proxy URLs:", error);
+      toast.error(t("proxies.management.copyFailed"));
+    }
+  }, [selectedProxies, t]);
+
+  // Profiles currently routed through the proxy being deleted: the confirm
+  // copy warns that they all switch to direct.
+  const proxyDeleteUsage = proxyToDelete
+    ? (proxyUsage[proxyToDelete.id] ?? 0)
+    : 0;
 
   return (
     <>
@@ -1239,6 +1522,170 @@ export function ProxyManagementDialog({
                 className="mt-4 min-h-0 flex-1 flex-col data-[state=active]:flex"
               >
                 <div className="flex min-h-0 flex-1 flex-col gap-4">
+                  {!isLoading && storedProxies.length > 0 && (
+                    <div className="flex shrink-0 flex-col gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="relative min-w-48 flex-1">
+                          <LuSearch className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                          <Input
+                            value={proxyQuery}
+                            onChange={(event) => {
+                              setProxyQuery(event.target.value);
+                            }}
+                            placeholder={t(
+                              "proxies.management.searchPlaceholder",
+                            )}
+                            className="h-9 pr-9 pl-8"
+                          />
+                          {proxyQuery && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="absolute top-1/2 right-1 size-7 -translate-y-1/2"
+                              onClick={() => {
+                                setProxyQuery("");
+                              }}
+                              aria-label={t("common.buttons.clear")}
+                            >
+                              <LuX className="size-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                        <Select
+                          value={proxyListFilter}
+                          onValueChange={(value) => {
+                            setProxyListFilter(value as ProxyListFilter);
+                          }}
+                        >
+                          <SelectTrigger className="h-9 w-40">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">
+                              {t("proxies.management.filterAll")}
+                            </SelectItem>
+                            <SelectItem value="working">
+                              {t("proxies.management.filterWorking")}
+                            </SelectItem>
+                            <SelectItem value="failed">
+                              {t("proxies.management.filterFailed")}
+                            </SelectItem>
+                            <SelectItem value="unchecked">
+                              {t("proxies.management.filterUnchecked")}
+                            </SelectItem>
+                            <SelectItem value="used">
+                              {t("proxies.management.filterUsed")}
+                            </SelectItem>
+                            <SelectItem value="unused">
+                              {t("proxies.management.filterUnused")}
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          value={proxyProtocolFilter}
+                          onValueChange={setProxyProtocolFilter}
+                        >
+                          <SelectTrigger className="h-9 w-36">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">
+                              {t("proxies.management.protocolAll")}
+                            </SelectItem>
+                            {availableProxyProtocols.map((protocol) => (
+                              <SelectItem key={protocol} value={protocol}>
+                                {protocol.toUpperCase()}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                        <span className="mr-1 tabular-nums">
+                          {t("proxies.management.filteredCount", {
+                            shown: filteredProxies.length,
+                            total: storedProxies.length,
+                          })}
+                        </span>
+                        <Button
+                          type="button"
+                          variant={
+                            proxyListFilter === "working"
+                              ? "secondary"
+                              : "ghost"
+                          }
+                          size="sm"
+                          className="h-6 gap-1.5 px-2 text-xs"
+                          onClick={() => {
+                            setProxyListFilter((current) =>
+                              current === "working" ? "all" : "working",
+                            );
+                          }}
+                        >
+                          <span className="size-1.5 rounded-full bg-success" />
+                          {t("proxies.management.workingCount", {
+                            count: proxyHealthCounts.working,
+                          })}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={
+                            proxyListFilter === "failed" ? "secondary" : "ghost"
+                          }
+                          size="sm"
+                          className="h-6 gap-1.5 px-2 text-xs"
+                          onClick={() => {
+                            setProxyListFilter((current) =>
+                              current === "failed" ? "all" : "failed",
+                            );
+                          }}
+                        >
+                          <span className="size-1.5 rounded-full bg-destructive" />
+                          {t("proxies.management.failedCount", {
+                            count: proxyHealthCounts.failed,
+                          })}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={
+                            proxyListFilter === "unchecked"
+                              ? "secondary"
+                              : "ghost"
+                          }
+                          size="sm"
+                          className="h-6 gap-1.5 px-2 text-xs"
+                          onClick={() => {
+                            setProxyListFilter((current) =>
+                              current === "unchecked" ? "all" : "unchecked",
+                            );
+                          }}
+                        >
+                          <span className="size-1.5 rounded-full bg-muted-foreground" />
+                          {t("proxies.management.uncheckedCount", {
+                            count: proxyHealthCounts.unchecked,
+                          })}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={
+                            proxyListFilter === "used" ? "secondary" : "ghost"
+                          }
+                          size="sm"
+                          className="h-6 gap-1.5 px-2 text-xs"
+                          onClick={() => {
+                            setProxyListFilter((current) =>
+                              current === "used" ? "all" : "used",
+                            );
+                          }}
+                        >
+                          {t("proxies.management.usedCount", {
+                            count: proxyHealthCounts.used,
+                          })}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   {isLoading ? (
                     <div className="text-sm text-muted-foreground">
                       {t("proxies.management.loading")}
@@ -1247,96 +1694,178 @@ export function ProxyManagementDialog({
                     <div className="text-sm text-muted-foreground">
                       {t("proxies.management.noneCreated")}
                     </div>
+                  ) : filteredProxies.length === 0 ? (
+                    <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                      {t("proxies.management.noMatches")}
+                    </div>
                   ) : (
-                    <FadingScrollArea
-                      className={cn(
-                        "min-h-0 flex-1",
-                        selectedProxies.length > 0 && "pb-16",
-                      )}
-                      style={
-                        {
-                          "--scroll-fade-top-offset": "32px",
-                        } as React.CSSProperties
-                      }
-                    >
-                      <Table
-                        className="w-full table-fixed"
-                        containerClassName="overflow-visible"
+                    <>
+                      <FadingScrollArea
+                        className={cn(
+                          "min-h-0 flex-1",
+                          selectedProxies.length > 0 && "pb-16",
+                        )}
+                        style={
+                          {
+                            "--scroll-fade-top-offset": "32px",
+                          } as React.CSSProperties
+                        }
                       >
-                        <TableHeader className="sticky top-0 z-10 bg-background">
-                          {proxiesTable.getHeaderGroups().map((headerGroup) => (
-                            <TableRow key={headerGroup.id}>
-                              {headerGroup.headers.map((header) => (
-                                <TableHead
-                                  key={header.id}
-                                  style={{
-                                    width:
-                                      header.column.id === "name" ||
-                                      header.column.id === "hostPort"
-                                        ? undefined
-                                        : `${header.column.getSize()}px`,
-                                  }}
-                                  className={cn(
-                                    // name and hostPort emit no width, so
-                                    // fixed layout splits the remaining
-                                    // space evenly between them (hostPort
-                                    // hides below @2xl, leaving name all
-                                    // of it).
-                                    header.column.id === "name" && "max-w-0",
-                                    header.column.id === "hostPort" &&
-                                      "hidden max-w-0 @2xl:table-cell",
-                                    (header.column.id === "protocol" ||
-                                      header.column.id === "type") &&
-                                      "hidden @2xl:table-cell",
-                                  )}
-                                >
-                                  {header.isPlaceholder
-                                    ? null
-                                    : flexRender(
-                                        header.column.columnDef.header,
-                                        header.getContext(),
+                        <Table
+                          className="w-full table-fixed"
+                          containerClassName="overflow-visible"
+                        >
+                          <TableHeader className="sticky top-0 z-10 bg-background">
+                            {proxiesTable
+                              .getHeaderGroups()
+                              .map((headerGroup) => (
+                                <TableRow key={headerGroup.id}>
+                                  {headerGroup.headers.map((header) => (
+                                    <TableHead
+                                      key={header.id}
+                                      style={{
+                                        width:
+                                          header.column.id === "name" ||
+                                          header.column.id === "hostPort"
+                                            ? undefined
+                                            : `${header.column.getSize()}px`,
+                                      }}
+                                      className={cn(
+                                        // name and hostPort emit no width, so
+                                        // fixed layout splits the remaining
+                                        // space evenly between them (hostPort
+                                        // hides below @2xl, leaving name all
+                                        // of it).
+                                        header.column.id === "name" &&
+                                          "max-w-0",
+                                        header.column.id === "hostPort" &&
+                                          "hidden max-w-0 @2xl:table-cell",
+                                        (header.column.id === "protocol" ||
+                                          header.column.id === "type") &&
+                                          "hidden @2xl:table-cell",
                                       )}
-                                </TableHead>
+                                    >
+                                      {header.isPlaceholder
+                                        ? null
+                                        : flexRender(
+                                            header.column.columnDef.header,
+                                            header.getContext(),
+                                          )}
+                                    </TableHead>
+                                  ))}
+                                </TableRow>
                               ))}
-                            </TableRow>
-                          ))}
-                        </TableHeader>
-                        <TableBody>
-                          {proxiesTable.getRowModel().rows.map((row) => (
-                            <TableRow
-                              key={row.id}
-                              data-state={row.getIsSelected() && "selected"}
-                            >
-                              {row.getVisibleCells().map((cell) => (
-                                <TableCell
-                                  key={cell.id}
-                                  style={{
-                                    width:
-                                      cell.column.id === "name" ||
-                                      cell.column.id === "hostPort"
-                                        ? undefined
-                                        : `${cell.column.getSize()}px`,
-                                  }}
-                                  className={cn(
-                                    cell.column.id === "name" && "max-w-0",
-                                    cell.column.id === "hostPort" &&
-                                      "hidden max-w-0 @2xl:table-cell",
-                                    (cell.column.id === "protocol" ||
-                                      cell.column.id === "type") &&
-                                      "hidden @2xl:table-cell",
-                                  )}
-                                >
-                                  {flexRender(
-                                    cell.column.columnDef.cell,
-                                    cell.getContext(),
-                                  )}
-                                </TableCell>
+                          </TableHeader>
+                          <TableBody>
+                            {proxiesTable.getRowModel().rows.map((row) => (
+                              <TableRow
+                                key={row.id}
+                                data-state={row.getIsSelected() && "selected"}
+                              >
+                                {row.getVisibleCells().map((cell) => (
+                                  <TableCell
+                                    key={cell.id}
+                                    style={{
+                                      width:
+                                        cell.column.id === "name" ||
+                                        cell.column.id === "hostPort"
+                                          ? undefined
+                                          : `${cell.column.getSize()}px`,
+                                    }}
+                                    className={cn(
+                                      cell.column.id === "name" && "max-w-0",
+                                      cell.column.id === "hostPort" &&
+                                        "hidden max-w-0 @2xl:table-cell",
+                                      (cell.column.id === "protocol" ||
+                                        cell.column.id === "type") &&
+                                        "hidden @2xl:table-cell",
+                                    )}
+                                  >
+                                    {flexRender(
+                                      cell.column.columnDef.cell,
+                                      cell.getContext(),
+                                    )}
+                                  </TableCell>
+                                ))}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </FadingScrollArea>
+                      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                        <span className="tabular-nums">
+                          {t("proxies.management.resultRange", {
+                            start: proxyRangeStart,
+                            end: proxyRangeEnd,
+                            total: filteredProxies.length,
+                          })}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <span>{t("proxies.management.rowsPerPage")}</span>
+                          <Select
+                            value={String(proxiesPagination.pageSize)}
+                            onValueChange={(value) => {
+                              proxiesTable.setPageSize(Number(value));
+                            }}
+                          >
+                            <SelectTrigger className="h-8 w-20">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {[50, 100, 250].map((size) => (
+                                <SelectItem key={size} value={String(size)}>
+                                  {size}
+                                </SelectItem>
                               ))}
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </FadingScrollArea>
+                            </SelectContent>
+                          </Select>
+                          <span className="min-w-24 text-center tabular-nums">
+                            {t("proxies.management.pageStatus", {
+                              page: proxiesPagination.pageIndex + 1,
+                              pages: proxyPageCount,
+                            })}
+                          </span>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon"
+                                className="size-8"
+                                onClick={() => {
+                                  proxiesTable.previousPage();
+                                }}
+                                disabled={!proxiesTable.getCanPreviousPage()}
+                              >
+                                <LuChevronLeft className="size-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>{t("proxies.management.previousPage")}</p>
+                            </TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon"
+                                className="size-8"
+                                onClick={() => {
+                                  proxiesTable.nextPage();
+                                }}
+                                disabled={!proxiesTable.getCanNextPage()}
+                              >
+                                <LuChevronRight className="size-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>{t("proxies.management.nextPage")}</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </div>
+                    </>
                   )}
                 </div>
               </AnimatedTabsContent>
@@ -1472,9 +2001,21 @@ export function ProxyManagementDialog({
         }}
         onConfirm={handleConfirmDelete}
         title={t("proxies.management.deleteTitle")}
-        description={t("proxies.management.deleteDescription", {
-          name: proxyToDelete?.name ?? "",
-        })}
+        description={
+          proxyDeleteUsage > 0
+            ? t(
+                proxyDeleteUsage === 1
+                  ? "proxies.management.deleteDescriptionWithUsage_one"
+                  : "proxies.management.deleteDescriptionWithUsage_other",
+                {
+                  name: proxyToDelete?.name ?? "",
+                  count: proxyDeleteUsage,
+                },
+              )
+            : t("proxies.management.deleteDescription", {
+                name: proxyToDelete?.name ?? "",
+              })
+        }
         confirmButtonText={t("common.buttons.delete")}
         isLoading={isDeleting}
       />
@@ -1517,6 +2058,21 @@ export function ProxyManagementDialog({
       {isOpen && activeTab === "proxies" && (
         <DataTableActionBar table={proxiesTable}>
           <DataTableActionBarSelection table={proxiesTable} />
+          <DataTableActionBarAction
+            tooltip={t("proxies.management.checkSelected")}
+            onClick={() => void handleBulkCheckProxies()}
+            size="icon"
+            isPending={isBulkCheckingProxies}
+          >
+            <LuGauge />
+          </DataTableActionBarAction>
+          <DataTableActionBarAction
+            tooltip={t("proxies.management.copySelected")}
+            onClick={() => void handleCopySelectedProxies()}
+            size="icon"
+          >
+            <LuClipboard />
+          </DataTableActionBarAction>
           <DataTableActionBarAction
             tooltip={t("syncTooltips.bulkToggle")}
             onClick={() => void handleBulkToggleProxiesSync()}

@@ -4,6 +4,9 @@
 
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::time::Duration;
+
+use futures_util::{stream::FuturesUnordered, StreamExt};
 
 /// IP utility error type.
 #[derive(Debug, thiserror::Error)]
@@ -28,9 +31,9 @@ pub async fn fetch_public_ip(proxy: Option<&str>) -> Result<String, IpError> {
     "https://ipecho.net/plain",
   ];
 
-  // 10s rather than 5s: residential proxies that allocate an exit on first
-  // connect routinely need more than 5s for the initial request.
-  let client_builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10));
+  let client_builder = reqwest::Client::builder()
+    .connect_timeout(Duration::from_secs(3))
+    .timeout(Duration::from_secs(8));
 
   let client = if let Some(proxy_url) = proxy {
     let proxy = reqwest::Proxy::all(proxy_url)
@@ -46,55 +49,54 @@ pub async fn fetch_public_ip(proxy: Option<&str>) -> Result<String, IpError> {
       .map_err(|e| IpError::Network(e.to_string()))?
   };
 
-  let mut errors = Vec::new();
-
-  // Overall deadline across all endpoints. Without it, a proxy that accepts
-  // connections but stalls holds callers for the full 6 x 10s; slow-but-live
-  // proxies still get the whole 10s on the endpoints that fit the budget.
-  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-
-  for url in &urls {
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    if remaining.is_zero() {
-      errors.push(format!("{}: skipped (30s overall deadline reached)", url));
-      continue;
-    }
-
-    let attempt = async {
-      match client.get(*url).send().await {
+  let mut requests = FuturesUnordered::new();
+  for url in urls {
+    let client = client.clone();
+    requests.push(async move {
+      let result = match client.get(url).send().await {
         Ok(response) if response.status().is_success() => match response.text().await {
           Ok(text) => {
             let ip = text.trim().to_string();
             if validate_ip(&ip) {
               Ok(ip)
             } else {
-              Err(format!("{}: response is not an IP address", url))
+              Err(format!("{url}: response is not an IP address"))
             }
           }
-          Err(e) => Err(format!("{}: {}", url, e)),
+          Err(e) => Err(format!("{url}: {e}")),
         },
-        Ok(response) => Err(format!("{}: HTTP {}", url, response.status())),
-        Err(e) => Err(format!("{}: {}", url, e)),
-      }
-    };
-
-    match tokio::time::timeout(remaining, attempt).await {
-      Ok(Ok(ip)) => return Ok(ip),
-      Ok(Err(e)) => errors.push(e),
-      Err(_) => errors.push(format!("{}: timed out (30s overall deadline reached)", url)),
-    }
+        Ok(response) => Err(format!("{url}: HTTP {}", response.status())),
+        Err(e) => Err(format!("{url}: {e}")),
+      };
+      result
+    });
   }
 
-  if errors.is_empty() {
-    Err(IpError::Network(
-      "Failed to fetch public IP from any endpoint".to_string(),
-    ))
-  } else {
-    Err(IpError::Network(format!(
+  let raced = tokio::time::timeout(Duration::from_secs(8), async {
+    let mut errors = Vec::new();
+    while let Some(result) = requests.next().await {
+      match result {
+        Ok(ip) => return Ok(ip),
+        Err(error) => errors.push(error),
+      }
+    }
+    Err(errors)
+  })
+  .await;
+
+  match raced {
+    Ok(Ok(ip)) => Ok(ip),
+    Ok(Err(errors)) if !errors.is_empty() => Err(IpError::Network(format!(
       "All {} endpoints failed: {}",
       errors.len(),
       errors.join("; ")
-    )))
+    ))),
+    Ok(Err(_)) => Err(IpError::Network(
+      "Failed to fetch public IP from any endpoint".to_string(),
+    )),
+    Err(_) => Err(IpError::Network(
+      "Public IP lookup timed out after 8 seconds".to_string(),
+    )),
   }
 }
 

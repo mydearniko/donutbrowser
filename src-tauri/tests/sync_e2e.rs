@@ -1,4 +1,5 @@
 use donutbrowser_lib::sync::types::*;
+use donutbrowser_lib::sync::SyncClient;
 use reqwest::Client;
 use serde_json::json;
 use std::env;
@@ -32,9 +33,8 @@ async fn ensure_sync_server_available() {
           "Sync server is not healthy. Health check returned status: {}\n\
           Server URL: {}\n\
           Please ensure:\n\
-          1. MinIO is running (docker compose up -d in donut-sync/)\n\
-          2. donut-sync server is running (cd donut-sync && pnpm start:dev)\n\
-          3. SYNC_SERVER_URL environment variable is set correctly",
+          1. donut-sync is running (docker compose up -d in donut-sync/)\n\
+          2. SYNC_SERVER_URL points to that service",
           response.status(),
           get_sync_server_url()
         );
@@ -45,10 +45,9 @@ async fn ensure_sync_server_available() {
         "Cannot connect to sync server: {}\n\
         Server URL: {}\n\
         Please ensure:\n\
-        1. MinIO is running (docker compose up -d in donut-sync/)\n\
-        2. donut-sync server is running (cd donut-sync && pnpm start:dev)\n\
-        3. SYNC_SERVER_URL environment variable is set correctly\n\
-        4. Network connectivity is available",
+        1. donut-sync is running (docker compose up -d in donut-sync/)\n\
+        2. SYNC_SERVER_URL points to that service\n\
+        3. Network connectivity is available",
         e,
         get_sync_server_url()
       );
@@ -568,6 +567,121 @@ async fn test_batch_presign_upload() {
     assert!(item["url"].as_str().is_some());
     assert!(item["key"].as_str().is_some());
   }
+}
+
+#[tokio::test]
+async fn test_local_bulk_profile_transfer() {
+  ensure_sync_server_available().await;
+  let profile_id = uuid::Uuid::new_v4().to_string();
+  let prefix = format!("profiles/{profile_id}/files/");
+  let client = SyncClient::new(get_sync_server_url(), TEST_TOKEN.to_string());
+  let capabilities = client.capabilities().await;
+  assert!(capabilities.bulk_transfer);
+  assert!(capabilities.profile_index);
+  assert!(capabilities.max_bundle_items >= 2);
+
+  let temporary = TempDir::new().unwrap();
+  let upload_archive = temporary.path().join("upload.tar.gz");
+  let expected = [
+    ("Default/Cookies", b"cookie database".as_slice()),
+    ("Sessions/Tabs_1", b"restored tabs".as_slice()),
+    (
+      concat!(
+        "Default/Local Extension Settings/",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+        "state"
+      ),
+      b"extension state".as_slice(),
+    ),
+  ];
+  {
+    let output = fs::File::create(&upload_archive).unwrap();
+    let encoder = flate2::write::GzEncoder::new(output, flate2::Compression::fast());
+    let mut archive = tar::Builder::new(encoder);
+    for (path, data) in expected {
+      let mut header = tar::Header::new_gnu();
+      header.set_mode(0o600);
+      header.set_mtime(0);
+      header.set_size(data.len() as u64);
+      header.set_cksum();
+      archive.append_data(&mut header, path, data).unwrap();
+    }
+    archive.into_inner().unwrap().finish().unwrap();
+  }
+
+  let uploaded = client
+    .upload_bundle(&prefix, &upload_archive)
+    .await
+    .unwrap();
+  assert_eq!(uploaded.item_count, expected.len());
+  for (path, data) in expected {
+    let key = format!("{prefix}{path}");
+    let presign = client.presign_download(&key).await.unwrap();
+    assert_eq!(client.download_bytes(&presign.url).await.unwrap(), data);
+  }
+
+  let manifest_key = format!("profiles/{profile_id}/manifest.json");
+  let manifest_hash = "committed-profile-state";
+  let manifest_metadata =
+    std::collections::HashMap::from([("manifest-hash".to_string(), manifest_hash.to_string())]);
+  let manifest_presign = client
+    .presign_upload_with_metadata(
+      &manifest_key,
+      Some("application/json"),
+      Some(manifest_metadata),
+    )
+    .await
+    .unwrap();
+  client
+    .upload_bytes_with_metadata(
+      &manifest_presign.url,
+      br#"{"version":1}"#,
+      Some("application/json"),
+      manifest_presign.metadata.as_ref(),
+    )
+    .await
+    .unwrap();
+  let manifest_stat = client.stat(&manifest_key).await.unwrap();
+  assert_eq!(
+    manifest_stat
+      .metadata
+      .as_ref()
+      .and_then(|metadata| metadata.get("manifest-hash"))
+      .map(String::as_str),
+    Some(manifest_hash)
+  );
+  let indexed = client.list_profile_manifests("profiles/").await.unwrap();
+  assert!(indexed.iter().any(|object| object.key == manifest_key));
+
+  let download_archive = temporary.path().join("download.tar.gz");
+  let paths: Vec<String> = expected
+    .iter()
+    .map(|(path, _)| (*path).to_string())
+    .collect();
+  client
+    .download_bundle(&prefix, &paths, &download_archive)
+    .await
+    .unwrap();
+  let input = fs::File::open(download_archive).unwrap();
+  let decoder = flate2::read::GzDecoder::new(input);
+  let mut archive = tar::Archive::new(decoder);
+  let mut downloaded = std::collections::HashMap::new();
+  for entry in archive.entries().unwrap() {
+    use std::io::Read;
+    let mut entry = entry.unwrap();
+    let path = entry.path().unwrap().to_string_lossy().to_string();
+    let mut data = Vec::new();
+    entry.read_to_end(&mut data).unwrap();
+    downloaded.insert(path, data);
+  }
+  for (path, data) in expected {
+    assert_eq!(downloaded.get(path).map(Vec::as_slice), Some(data));
+  }
+
+  client
+    .delete_prefix(&format!("profiles/{profile_id}/"), None)
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

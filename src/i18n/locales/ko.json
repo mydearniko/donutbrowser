@@ -165,7 +165,6 @@
       "passwordSaved": "암호화 비밀번호가 설정되었습니다",
       "passwordMismatch": "비밀번호가 일치하지 않습니다",
       "passwordTooShort": "비밀번호는 8자 이상이어야 합니다",
-      "requiresProOrOwner": "프로필 암호화는 Pro 사용자 및 팀 소유자만 사용할 수 있습니다.",
       "validatePassword": "확인",
       "validateDialog": {
         "title": "암호화 비밀번호 확인",
@@ -173,7 +172,8 @@
         "submit": "확인",
         "matchToast": "비밀번호가 일치합니다",
         "mismatchToast": "비밀번호가 일치하지 않습니다"
-      }
+      },
+      "teamOwnerRequired": "팀 소유자만 프로필 암호화를 관리할 수 있습니다."
     },
     "commercial": {
       "title": "상업용 라이선스",
@@ -270,7 +270,6 @@
       "stopLeader": "이 프로필과 모든 팔로워 중지",
       "stopFollower": "{{leaderName}}의 작업을 따르는 중",
       "desyncedTooltip": "{{url}}에서 동기화 실패",
-      "paidFeature": "동기화는 유료 기능입니다",
       "wayfernOnly": "Wayfern 프로필만 동기화할 수 있습니다",
       "selectFollowers": "팔로워 프로필 선택",
       "selectFollowersDesc": "리더 프로필의 작업을 미러링할 프로필을 선택하세요. 중지된 Wayfern 프로필만 선택할 수 있습니다.",
@@ -307,8 +306,7 @@
       "assignExtensionGroup": "확장 프로그램 그룹 할당",
       "copyCookies": "쿠키 복사",
       "runSelected": "선택 실행",
-      "stopSelected": "선택 중지",
-      "proRequired": "대량 실행/중지하려면 Pro 플랜이 필요합니다"
+      "stopSelected": "선택 중지"
     },
     "passwordProtectedBadge": "비밀번호 보호됨",
     "launchHook": {
@@ -381,7 +379,8 @@
       "description": "디스크에 저장된 프로필 데이터를 암호화합니다. 실행하려면 필요합니다."
     },
     "downloadingSubtitle": "다운로드 중…",
-    "browsersDownloading": "브라우저를 아직 다운로드하는 중입니다. 다운로드가 완료되면 프로필을 만들 수 있습니다."
+    "browsersDownloading": "브라우저를 아직 다운로드하는 중입니다. 다운로드가 완료되면 프로필을 만들 수 있습니다.",
+    "moreOptions": "추가 옵션"
   },
   "deleteDialog": {
     "title": "프로필 삭제",
@@ -406,8 +405,10 @@
       "disableSync": "동기화 사용 안 함",
       "editProxy": "프록시 편집",
       "deleteProxy": "프록시 삭제",
-      "cannotDelete_one": "삭제할 수 없습니다: {{count}}개 프로필에서 사용 중",
-      "cannotDelete_other": "삭제할 수 없습니다: {{count}}개 프로필에서 사용 중",
+      "deleteUnlinks_one": "삭제하고 {{count}}개 프로필을 직접 연결로 전환",
+      "deleteUnlinks_other": "삭제하고 {{count}}개 프로필을 직접 연결로 전환",
+      "deleteDescriptionWithUsage_one": "이 작업은 되돌릴 수 없습니다. 프록시 \"{{name}}\"(을)를 영구 삭제하고 {{count}}개 프로필을 직접 연결로 전환합니다.",
+      "deleteDescriptionWithUsage_other": "이 작업은 되돌릴 수 없습니다. 프록시 \"{{name}}\"(을)를 영구 삭제하고 {{count}}개 프로필을 직접 연결로 전환합니다.",
       "syncEnabled": "동기화 사용됨",
       "syncDisabled": "동기화 사용 안 함",
       "updateSyncFailed": "동기화 업데이트 실패",
@@ -419,7 +420,31 @@
       "newVpn": "새 VPN",
       "protocolCol": "프로토콜",
       "hostPort": "호스트 : 포트",
-      "title": "프록시 및 VPN"
+      "title": "프록시 및 VPN",
+      "searchPlaceholder": "이름, 호스트, IP 또는 위치 검색...",
+      "filterAll": "모든 상태",
+      "filterWorking": "정상",
+      "filterFailed": "실패",
+      "filterUnchecked": "확인 안 됨",
+      "filterUsed": "사용 중",
+      "filterUnused": "미사용",
+      "protocolAll": "모든 프로토콜",
+      "filteredCount": "프록시 {{total}}개 중 {{shown}}개",
+      "workingCount": "정상 {{count}}개",
+      "failedCount": "실패 {{count}}개",
+      "uncheckedCount": "미확인 {{count}}개",
+      "usedCount": "사용 중 {{count}}개",
+      "noMatches": "필터와 일치하는 프록시가 없습니다.",
+      "resultRange": "{{total}}개 중 {{start}}–{{end}}",
+      "rowsPerPage": "페이지당 행",
+      "pageStatus": "{{pages}}페이지 중 {{page}}페이지",
+      "previousPage": "이전 페이지",
+      "nextPage": "다음 페이지",
+      "bulkCheckResult": "프록시 {{count}}개 확인: 정상 {{working}}개, 실패 {{failed}}개",
+      "checkSelected": "선택한 프록시 확인",
+      "copySelected": "선택한 프록시 URL 복사",
+      "copiedSelected": "프록시 URL {{count}}개를 복사했습니다",
+      "copyFailed": "프록시 URL을 복사하지 못했습니다"
     },
     "add": "프록시 추가",
     "edit": "프록시 편집",
@@ -846,8 +871,7 @@
       "selectFile": "파일 선택",
       "preview": "{{count}}개 쿠키 발견",
       "success": "{{imported}}개 쿠키를 가져왔습니다 ({{replaced}}개 교체됨)",
-      "error": "쿠키 가져오기 실패",
-      "proFeature": "쿠키 가져오기는 Pro 기능입니다"
+      "error": "쿠키 가져오기 실패"
     },
     "export": {
       "title": "쿠키 내보내기",
@@ -1053,7 +1077,6 @@
     "productSub": "제품 보조",
     "brand": "브랜드",
     "brandVersion": "브랜드 버전",
-    "proFeature": "이것은 Pro 기능입니다",
     "generateFingerprint": "핑거프린트 생성",
     "refreshFingerprint": "핑거프린트 새로 고침",
     "canvasNoiseSeedPlaceholder": "캔버스 핑거프린트의 시드 문자열 입력",
@@ -1193,9 +1216,7 @@
       "cannotWhileRunning": "비밀번호를 변경하기 전에 프로필을 중지하세요."
     },
     "fingerprint": {
-      "notSupported": "핑거프린트 편집은 Wayfern 프로필에서만 사용할 수 있습니다.",
-      "lockedTitle": "핑거프린트 보기 및 편집은 Pro 기능입니다",
-      "lockedDescription": "기기 정보는 모든 프로필에서 보호됩니다. 프로필의 핑거프린트를 보고 편집하려면 활성 유료 요금제가 필요합니다."
+      "notSupported": "핑거프린트 편집은 Wayfern 프로필에서만 사용할 수 있습니다."
     },
     "syncStatusValue": {
       "waiting": "대기 중",
@@ -1212,7 +1233,6 @@
     "extensionsTab": "확장 프로그램",
     "groupsTab": "그룹",
     "managedNotice": "여기서 관리되는 확장 프로그램은 실행 시 프로필에 수동으로 설치된 확장 프로그램을 대체합니다.",
-    "proRequired": "확장 프로그램 관리는 Pro 기능입니다",
     "empty": "아직 업로드된 확장 프로그램이 없습니다.",
     "noGroups": "아직 생성된 확장 프로그램 그룹이 없습니다.",
     "createGroup": "그룹 생성",
@@ -1270,14 +1290,6 @@
       "groupsDescription": "{{count}}개의 확장 프로그램 그룹을 삭제하시겠습니까? {{names}}",
       "confirmButton": "삭제"
     }
-  },
-  "pro": {
-    "badge": "PRO",
-    "fingerprintLocked": "핑거프린트 편집은 Pro 기능입니다",
-    "cookieCopyLocked": "쿠키 복사는 Pro 기능입니다",
-    "cookieImportLocked": "쿠키 가져오기는 Pro 기능입니다",
-    "cookieExportLocked": "쿠키 내보내기는 Pro 기능입니다",
-    "cookieManagementLocked": "쿠키 관리는 Pro 기능입니다"
   },
   "dnsBlocklist": {
     "title": "DNS 차단 목록",
@@ -1457,7 +1469,8 @@
     "noneOption": "없음",
     "noValidProfiles": "유효한 프로필이 선택되지 않았습니다.",
     "vpnGroupHeading": "VPN",
-    "failedFallback": "프로필에 프록시/VPN 할당 실패"
+    "failedFallback": "프로필에 프록시/VPN 할당 실패",
+    "limitedResults": "{{total}}개 결과 중 처음 {{shown}}개를 표시합니다. 검색어를 구체화하세요."
   },
   "groupAssignment": {
     "title": "그룹 할당",
@@ -1647,7 +1660,9 @@
     "tagsHeader": "태그",
     "noteHeader": "메모",
     "vpnsHeading": "VPN",
-    "createByCountryHeading": "국가별 생성"
+    "createByCountryHeading": "국가별 생성",
+    "editAssignedProxy": "할당된 프록시 편집: {{name}}",
+    "proxyPickerLimited": "{{total}}개 결과 중 처음 {{shown}}개를 표시합니다. 검색어를 구체화하세요."
   },
   "dataTableActionBar": {
     "selected": "{{count}}개 선택됨",
@@ -1794,7 +1809,6 @@
     "cookieDbLocked": "쿠키를 읽을 수 없습니다 — 데이터베이스가 잠겨 있습니다. 브라우저를 닫고 다시 시도하세요.",
     "cookieDbUnavailable": "쿠키를 읽을 수 없습니다 — 쿠키 저장소를 사용할 수 없습니다.",
     "selfHostedRequiresLogout": "자체 호스팅 서버를 구성하기 전에 Donut 계정에서 로그아웃하세요.",
-    "fingerprintRequiresPro": "핑거프린트를 보거나 편집하려면 활성 유료 요금제가 필요합니다. 보호 기능은 모든 요금제에 포함되어 있습니다.",
     "proxyNotWorking": "선택한 프록시가 작동하지 않아 프로필이 생성되지 않았습니다.",
     "proxyPaymentRequired": "선택한 프록시는 결제가 필요합니다(402). 구독이 만료되었을 수 있어 프로필이 생성되지 않았습니다.",
     "vpnNotWorking": "선택한 VPN이 작동하지 않아 프로필이 생성되지 않았습니다.",
@@ -1802,7 +1816,11 @@
     "updateChecksumsUnavailable": "업데이트 {{version}}의 체크섬 파일을 가져올 수 없어 검증하지 못했습니다. 업데이트가 설치되지 않았으며 나중에 다시 시도됩니다.",
     "updateChecksumMismatch": "다운로드한 업데이트 파일 {{file}}이(가) 체크섬 검증에 실패하여 삭제되었습니다. 다시 시도해 주세요.",
     "nameCannotBeEmpty": "이름은 비워둘 수 없습니다",
-    "wayfernVersionNotAvailable": "Wayfern 버전 {{requested}}은(는) 다운로드할 수 없습니다. 현재 버전은 {{current}}입니다."
+    "wayfernVersionNotAvailable": "Wayfern 버전 {{requested}}은(는) 다운로드할 수 없습니다. 현재 버전은 {{current}}입니다.",
+    "syncDeviceIdInvalid": "기기 ID는 3~128자여야 하며 영문자, 숫자, 마침표, 밑줄 또는 하이픈만 사용할 수 있습니다.",
+    "syncDeviceNameInvalid": "기기 이름은 1~80자여야 하며 제어 문자를 포함할 수 없습니다.",
+    "syncDeviceIdBusy": "기기 ID를 변경하기 전에 동기화된 프로필을 모두 닫고 진행 중인 동기화 전송이 끝날 때까지 기다리세요.",
+    "profileSyncPrepareFailed": "동기화에서 이 프로필을 안전하게 준비할 수 없습니다. 연결을 확인한 후 다시 시도하세요."
   },
   "rail": {
     "profiles": "프로필",
@@ -1882,11 +1900,32 @@
       "connectionStatus": "연결:",
       "statusUnknown": "테스트 안 됨",
       "testConnection": "연결 테스트",
-      "disconnect": "연결 해제"
+      "disconnect": "연결 해제",
+      "syncDefaults": {
+        "title": "프로필 동기화 기본값",
+        "description": "영구 프로필이 실시간 동기화에 참여하는 방식을 관리합니다.",
+        "newProfiles": "새 프로필에 일반 동기화 사용",
+        "newProfilesDescription": "프로필을 생성, 복제 또는 가져온 후 일반 동기화를 자동으로 활성화합니다.",
+        "enabledToast": "이제 일반 동기화가 기본값입니다",
+        "disabledToast": "새 프로필은 동기화가 꺼진 상태로 시작합니다",
+        "everywhereDescription": "사용 가능한 모든 프로필에 일반 동기화를 활성화합니다. 암호화된 프로필은 암호화를 유지하며 실행 중, 임시 또는 다른 OS의 프로필은 건너뜁니다.",
+        "enableEverywhere": "모든 프로필에 일반 동기화 사용",
+        "applySuccess": "일반 동기화가 활성화되었습니다",
+        "applyPartial": "일부 프로필이 업데이트되지 않았습니다",
+        "applyResult": "활성화: {{enabled}}; 이미 활성화됨: {{alreadyEnabled}}; 건너뜀: {{skipped}}; 실패: {{failed}}.",
+        "requiresConnection": "프로필 기본값을 관리하기 전에 동기화 연결을 저장하세요."
+      },
+      "deviceIdentity": {
+        "title": "기기 ID",
+        "description": "실시간 이벤트와 프로필 잠금에 사용하는 고정 ID입니다.",
+        "name": "기기 이름",
+        "id": "기기 ID",
+        "changeHint": "설치마다 고유한 ID를 사용하세요. 변경하기 전에 동기화된 프로필을 닫고 진행 중인 전송이 끝날 때까지 기다리세요.",
+        "regenerate": "새 ID 생성",
+        "saved": "기기 ID가 저장되었습니다"
+      }
     },
-    "deviceOrdinal": "{{count}}대 중 {{ordinal}}번째",
-    "automationPrimaryOnly": "브라우저 자동화는 기본 기기(기기 1)에서만 실행됩니다. 여기서 사용하려면 해당 기기에서 로그아웃하세요.",
-    "automationActiveHere": "이 기기에서 브라우저 자동화가 활성화되어 있습니다."
+    "deviceOrdinal": "{{count}}대 중 {{ordinal}}번째"
   },
   "shortcutsPage": {
     "title": "키보드 단축키",
@@ -2006,10 +2045,6 @@
       "commercialDesc": "2주간의 평가 기간 동안 무료입니다. 이후에는 유료 요금제가 필요하며, 이를 통해 프로젝트가 유지되고 발전할 수 있습니다."
     }
   },
-  "wayfernBlocked": {
-    "title": "브라우저 자동화가 일시 중지됨",
-    "description": "보통 여러 기기에서 동시에 로그인하여 계정의 Pro 브라우저 기능이 일시적으로 제한되었습니다. 다른 기기에서 로그아웃한 후 프로필을 다시 실행하면 복원됩니다."
-  },
   "wayfernConfigDialog": {
     "titleView": "핑거프린트 설정 보기 - {{name}} ({{browser}})",
     "titleConfigure": "핑거프린트 설정 구성 - {{name}} ({{browser}})",
@@ -2020,5 +2055,9 @@
   },
   "cookieCopy": {
     "noOtherTargets": "선택된 다른 Wayfern 프로필이 없습니다"
+  },
+  "wayfernTokenUnavailable": {
+    "title": "Wayfern 토큰을 사용할 수 없음",
+    "description": "호스팅된 Wayfern 토큰을 새로 고칠 수 없습니다. 로컬 프로필과 자동화는 계속 사용할 수 있지만 토큰 기반 지문 기능이 제한될 수 있습니다."
   }
 }

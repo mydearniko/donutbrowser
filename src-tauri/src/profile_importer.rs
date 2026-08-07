@@ -344,7 +344,7 @@ impl ProfileImporter {
       None
     };
 
-    let profile = BrowserProfile {
+    let mut profile = BrowserProfile {
       id: profile_id,
       name: new_profile_name.to_string(),
       browser: mapped.to_string(),
@@ -381,6 +381,7 @@ impl ProfileImporter {
     };
 
     self.profile_manager.save_profile(&profile)?;
+    crate::sync::apply_default_profile_sync_mode(app_handle, &mut profile).await;
 
     log::info!(
       "Successfully imported profile '{}' from '{}'",
@@ -454,15 +455,6 @@ pub async fn import_browser_profile(
   proxy_id: Option<String>,
   wayfern_config: Option<WayfernConfig>,
 ) -> Result<(), String> {
-  let fingerprint_os = wayfern_config.as_ref().and_then(|c| c.os.as_deref());
-
-  if !crate::cloud_auth::CLOUD_AUTH
-    .is_fingerprint_os_allowed(fingerprint_os)
-    .await
-  {
-    return Err("Fingerprint OS spoofing requires an active Pro subscription".to_string());
-  }
-
   let importer = ProfileImporter::instance();
   importer
     .import_profile(

@@ -13,6 +13,7 @@ import { CommandPalette } from "@/components/command-palette";
 import { CommercialTrialModal } from "@/components/commercial-trial-modal";
 import { CookieCopyDialog } from "@/components/cookie-copy-dialog";
 import { CookieManagementDialog } from "@/components/cookie-management-dialog";
+import { CreateGroupDialog } from "@/components/create-group-dialog";
 import { CreateProfileDialog } from "@/components/create-profile-dialog";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { DeviceCodeVerifyDialog } from "@/components/device-code-verify-dialog";
@@ -77,9 +78,10 @@ import {
   showSyncProgressToast,
   showToast,
 } from "@/lib/toast-utils";
-import type { BrowserProfile, SyncSettings, WayfernConfig } from "@/types";
+import type { BrowserProfile, WayfernConfig } from "@/types";
 
 type BrowserTypeString = "wayfern";
+const UNGROUPED_PROFILE_GROUP_ID = "__ungrouped__";
 
 interface PendingUrl {
   id: string;
@@ -219,30 +221,10 @@ export default function Home() {
     checkTrialStatus,
   } = useCommercialTrial();
 
-  // Cloud auth for cross-OS unlock
+  // Hosted account state is still used to avoid showing the commercial trial
+  // reminder to customers who already have an active plan.
   const { user: cloudUser } = useCloudAuth();
-  const crossOsUnlocked = getEntitlements(cloudUser).crossOsFingerprints;
-  // Bulk run/stop is a paid (browser automation) feature, matching the
-  // /v1/profiles/batch/run API gate. Free/starter users see the bulk Run/Stop
-  // actions disabled with a Pro badge.
-  const automationUnlocked = getEntitlements(cloudUser).browserAutomation;
-
-  const [selfHostedSyncConfigured, setSelfHostedSyncConfigured] =
-    useState(false);
-
-  const checkSelfHostedSync = useCallback(async () => {
-    try {
-      const settings = await invoke<SyncSettings>("get_sync_settings");
-      const hasConfig = Boolean(
-        settings.sync_server_url && settings.sync_token,
-      );
-      setSelfHostedSyncConfigured(hasConfig && !cloudUser);
-    } catch {
-      setSelfHostedSyncConfigured(false);
-    }
-  }, [cloudUser]);
-
-  const syncUnlocked = crossOsUnlocked || selfHostedSyncConfigured;
+  const hasActiveHostedPlan = getEntitlements(cloudUser).active;
 
   const [currentPage, setCurrentPage] = useState<AppPage>("profiles");
   const [accountDialogOpen, setAccountDialogOpen] = useState(false);
@@ -257,6 +239,10 @@ export default function Home() {
     "api" | "mcp"
   >("api");
   const [createProfileDialogOpen, setCreateProfileDialogOpen] = useState(false);
+  const [createProfileTargetGroupId, setCreateProfileTargetGroupId] = useState<
+    string | null | undefined
+  >(undefined);
+  const [createGroupDialogOpen, setCreateGroupDialogOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [integrationsDialogOpen, setIntegrationsDialogOpen] = useState(false);
   const [importProfileDialogOpen, setImportProfileDialogOpen] = useState(false);
@@ -333,6 +319,23 @@ export default function Home() {
 
   const handleSelectGroup = useCallback((groupId: string) => {
     setSelectedGroupId(groupId);
+    setSelectedProfiles([]);
+  }, []);
+
+  const handleCreateProfileDialogOpen = useCallback((open: boolean) => {
+    if (open) setCreateProfileTargetGroupId(undefined);
+    setCreateProfileDialogOpen(open);
+  }, []);
+
+  const handleCreateProfileInGroup = useCallback((groupId: string | null) => {
+    setCreateProfileTargetGroupId(groupId);
+    setCreateProfileDialogOpen(true);
+  }, []);
+
+  const handleGroupDeletedFromList = useCallback((groupId: string) => {
+    setSelectedGroupId((current) =>
+      current === groupId ? "__all__" : current,
+    );
     setSelectedProfiles([]);
   }, []);
 
@@ -450,14 +453,51 @@ export default function Home() {
     [handleRailNavigate, currentPage, proxyManagementInitialTab],
   );
 
+  const groupsById = useMemo(
+    () => new Map(groupsData.map((group) => [group.id, group])),
+    [groupsData],
+  );
+  const storedProxiesById = useMemo(
+    () => new Map(storedProxies.map((proxy) => [proxy.id, proxy])),
+    [storedProxies],
+  );
+  const vpnConfigsById = useMemo(
+    () => new Map(vpnConfigs.map((vpn) => [vpn.id, vpn])),
+    [vpnConfigs],
+  );
+  const knownGroupIds = useMemo(() => new Set(groupsById.keys()), [groupsById]);
+  const ungroupedProfilesCount = useMemo(
+    () =>
+      profiles.filter(
+        (profile) => !profile.group_id || !knownGroupIds.has(profile.group_id),
+      ).length,
+    [knownGroupIds, profiles],
+  );
+
+  useEffect(() => {
+    const selectedGroupStillExists =
+      selectedGroupId === "__all__" ||
+      (selectedGroupId === UNGROUPED_PROFILE_GROUP_ID
+        ? ungroupedProfilesCount > 0
+        : knownGroupIds.has(selectedGroupId));
+    if (!selectedGroupStillExists) {
+      setSelectedGroupId("__all__");
+      setSelectedProfiles([]);
+    }
+  }, [knownGroupIds, selectedGroupId, ungroupedProfilesCount]);
+
   // Ordered list the digit shortcuts and palette consume. "__all__" is index 1
-  // so Mod+1 always lands on the unfiltered view; the user's groups follow.
+  // so Mod+1 always lands on the unfiltered view; ungrouped and named groups
+  // follow when available.
   const orderedGroupTargets = useMemo(
     () => [
       { id: "__all__", name: t("rail.profiles") },
+      ...(ungroupedProfilesCount > 0
+        ? [{ id: UNGROUPED_PROFILE_GROUP_ID, name: t("groups.noGroup") }]
+        : []),
       ...groupsData.map((g) => ({ id: g.id, name: g.name })),
     ],
-    [groupsData, t],
+    [groupsData, t, ungroupedProfilesCount],
   );
 
   const selectGroupByDigit = useCallback(
@@ -745,6 +785,7 @@ export default function Home() {
             event.payload,
           );
           showErrorToast(t("errors.noProfilesForUrl"));
+          setCreateProfileTargetGroupId(undefined);
           setCreateProfileDialogOpen(true);
         }),
       );
@@ -821,9 +862,13 @@ export default function Home() {
             wayfernConfig: profileData.wayfernConfig,
             groupId:
               profileData.groupId ??
-              (selectedGroupId && selectedGroupId !== "__all__"
-                ? selectedGroupId
-                : undefined),
+              (createProfileTargetGroupId !== undefined
+                ? (createProfileTargetGroupId ?? undefined)
+                : selectedGroupId &&
+                    selectedGroupId !== "__all__" &&
+                    selectedGroupId !== UNGROUPED_PROFILE_GROUP_ID
+                  ? selectedGroupId
+                  : undefined),
             ephemeral: profileData.ephemeral,
             dnsBlocklist: profileData.dnsBlocklist,
             launchHook: profileData.launchHook,
@@ -868,7 +913,7 @@ export default function Home() {
         throw error;
       }
     },
-    [selectedGroupId, t],
+    [createProfileTargetGroupId, selectedGroupId, t],
   );
 
   const launchProfile = useCallback(
@@ -919,7 +964,7 @@ export default function Home() {
         console.log("Successfully launched profile:", result.name);
       } catch (err: unknown) {
         console.error("Failed to launch browser:", err);
-        const errorMessage = err instanceof Error ? err.message : String(err);
+        const errorMessage = translateBackendError(t, err);
         showErrorToast(
           t("errors.launchBrowserFailed", { error: errorMessage }),
         );
@@ -1101,18 +1146,30 @@ export default function Home() {
     setSelectedProfiles([]);
   }, [selectedProfiles, handleAssignProfilesToProxy]);
 
+  const handleCopyCookiesToProfiles = useCallback(
+    (profileIds: string[]) => {
+      if (profileIds.length === 0) return;
+      const requestedIds = new Set(profileIds);
+      const eligibleProfiles = profiles.filter(
+        (profile) =>
+          requestedIds.has(profile.id) && profile.browser === "wayfern",
+      );
+      if (eligibleProfiles.length === 0) {
+        showErrorToast(t("errors.cookieCopyUnsupportedBrowser"));
+        return;
+      }
+      setSelectedProfilesForCookies(
+        eligibleProfiles.map((profile) => profile.id),
+      );
+      setCookieCopyDialogOpen(true);
+    },
+    [profiles, t],
+  );
+
   const handleBulkCopyCookies = useCallback(() => {
     if (selectedProfiles.length === 0) return;
-    const eligibleProfiles = profiles.filter(
-      (p) => selectedProfiles.includes(p.id) && p.browser === "wayfern",
-    );
-    if (eligibleProfiles.length === 0) {
-      showErrorToast(t("errors.cookieCopyUnsupportedBrowser"));
-      return;
-    }
-    setSelectedProfilesForCookies(eligibleProfiles.map((p) => p.id));
-    setCookieCopyDialogOpen(true);
-  }, [selectedProfiles, profiles, t]);
+    handleCopyCookiesToProfiles(selectedProfiles);
+  }, [handleCopyCookiesToProfiles, selectedProfiles]);
 
   const [pendingBulkAction, setPendingBulkAction] = useState<{
     action: "run" | "stop";
@@ -1151,37 +1208,53 @@ export default function Home() {
   // Bulk run/stop only touch eligible profiles (run: not already running;
   // stop: currently running). An empty result shows a toast instead of a silent
   // no-op (guard), and 10+ targets require confirmation before launching/stopping.
+  const requestBulkRun = useCallback(
+    (profileIds: string[]) => {
+      if (profileIds.length === 0) return;
+      const profileIdSet = new Set(profileIds);
+      const targets = profiles.filter(
+        (p) => profileIdSet.has(p.id) && !runningProfiles.has(p.id),
+      );
+      if (targets.length === 0) {
+        showErrorToast(t("profiles.bulkRun.noneToRun"));
+        return;
+      }
+      if (targets.length >= 10) {
+        setPendingBulkAction({ action: "run", profiles: targets });
+        return;
+      }
+      void executeBulkRun(targets);
+    },
+    [profiles, runningProfiles, executeBulkRun, t],
+  );
+
+  const requestBulkStop = useCallback(
+    (profileIds: string[]) => {
+      if (profileIds.length === 0) return;
+      const profileIdSet = new Set(profileIds);
+      const targets = profiles.filter(
+        (p) => profileIdSet.has(p.id) && runningProfiles.has(p.id),
+      );
+      if (targets.length === 0) {
+        showErrorToast(t("profiles.bulkStop.noneToStop"));
+        return;
+      }
+      if (targets.length >= 10) {
+        setPendingBulkAction({ action: "stop", profiles: targets });
+        return;
+      }
+      void executeBulkStop(targets);
+    },
+    [profiles, runningProfiles, executeBulkStop, t],
+  );
+
   const handleBulkRun = useCallback(() => {
-    if (selectedProfiles.length === 0) return;
-    const targets = profiles.filter(
-      (p) => selectedProfiles.includes(p.id) && !runningProfiles.has(p.id),
-    );
-    if (targets.length === 0) {
-      showErrorToast(t("profiles.bulkRun.noneToRun"));
-      return;
-    }
-    if (targets.length >= 10) {
-      setPendingBulkAction({ action: "run", profiles: targets });
-      return;
-    }
-    void executeBulkRun(targets);
-  }, [selectedProfiles, profiles, runningProfiles, executeBulkRun, t]);
+    requestBulkRun(selectedProfiles);
+  }, [requestBulkRun, selectedProfiles]);
 
   const handleBulkStop = useCallback(() => {
-    if (selectedProfiles.length === 0) return;
-    const targets = profiles.filter(
-      (p) => selectedProfiles.includes(p.id) && runningProfiles.has(p.id),
-    );
-    if (targets.length === 0) {
-      showErrorToast(t("profiles.bulkStop.noneToStop"));
-      return;
-    }
-    if (targets.length >= 10) {
-      setPendingBulkAction({ action: "stop", profiles: targets });
-      return;
-    }
-    void executeBulkStop(targets);
-  }, [selectedProfiles, profiles, runningProfiles, executeBulkStop, t]);
+    requestBulkStop(selectedProfiles);
+  }, [requestBulkStop, selectedProfiles]);
 
   const handleCopyCookiesToProfile = useCallback((profile: BrowserProfile) => {
     setSelectedProfilesForCookies([profile.id]);
@@ -1393,7 +1466,7 @@ export default function Home() {
     let unlistenStarted: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
     let unlistenCompleted: (() => void) | undefined;
-    let unlistenWayfernBlocked: (() => void) | undefined;
+    let unlistenWayfernTokenUnavailable: (() => void) | undefined;
 
     void (async () => {
       unlistenRequired = await listen(
@@ -1456,15 +1529,18 @@ export default function Home() {
         });
       });
 
-      unlistenWayfernBlocked = await listen("wayfern-paid-blocked", () => {
-        showToast({
-          id: "wayfern-paid-blocked",
-          type: "error",
-          title: t("wayfernBlocked.title"),
-          description: t("wayfernBlocked.description"),
-          duration: 15000,
-        });
-      });
+      unlistenWayfernTokenUnavailable = await listen(
+        "wayfern-paid-blocked",
+        () => {
+          showToast({
+            id: "wayfern-token-unavailable",
+            type: "error",
+            title: t("wayfernTokenUnavailable.title"),
+            description: t("wayfernTokenUnavailable.description"),
+            duration: 15000,
+          });
+        },
+      );
 
       // If the effect was torn down mid-setup, the cleanup below already ran
       // before these handles existed — unlisten them now so nothing leaks.
@@ -1473,7 +1549,7 @@ export default function Home() {
         unlistenStarted?.();
         unlistenProgress?.();
         unlistenCompleted?.();
-        unlistenWayfernBlocked?.();
+        unlistenWayfernTokenUnavailable?.();
       }
     })();
 
@@ -1483,7 +1559,7 @@ export default function Home() {
       unlistenStarted?.();
       unlistenProgress?.();
       unlistenCompleted?.();
-      unlistenWayfernBlocked?.();
+      unlistenWayfernTokenUnavailable?.();
     };
   }, [t]);
 
@@ -1515,11 +1591,6 @@ export default function Home() {
     }
   }, [isInitialized, firstRunOnboarding, checkAllPermissions]);
 
-  // Check self-hosted sync config on mount and when cloud user changes
-  useEffect(() => {
-    void checkSelfHostedSync();
-  }, [checkSelfHostedSync]);
-
   // Filter data by selected group and search query
   const filteredProfiles = useMemo(() => {
     let filtered = profiles;
@@ -1529,6 +1600,10 @@ export default function Home() {
     // group id; ungrouped profiles only show through "All".
     if (!selectedGroupId || selectedGroupId === "__all__") {
       filtered = profiles;
+    } else if (selectedGroupId === UNGROUPED_PROFILE_GROUP_ID) {
+      filtered = profiles.filter(
+        (profile) => !profile.group_id || !knownGroupIds.has(profile.group_id),
+      );
     } else {
       filtered = profiles.filter(
         (profile) => profile.group_id === selectedGroupId,
@@ -1539,22 +1614,45 @@ export default function Home() {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
       filtered = filtered.filter((profile) => {
-        // Search in profile name
-        if (profile.name.toLowerCase().includes(query)) return true;
-
-        // Search in note
-        if (profile.note?.toLowerCase().includes(query)) return true;
-
-        // Search in tags
-        if (profile.tags?.some((tag) => tag.toLowerCase().includes(query)))
-          return true;
-
-        return false;
+        const group = profile.group_id
+          ? groupsById.get(profile.group_id)
+          : undefined;
+        const proxy = profile.proxy_id
+          ? storedProxiesById.get(profile.proxy_id)
+          : undefined;
+        const vpn = profile.vpn_id
+          ? vpnConfigsById.get(profile.vpn_id)
+          : undefined;
+        const searchableValues = [
+          profile.id,
+          profile.name,
+          profile.note,
+          profile.browser,
+          profile.version,
+          profile.release_type,
+          group?.name,
+          proxy?.name,
+          proxy?.proxy_settings.host,
+          proxy?.proxy_settings.username,
+          vpn?.name,
+          ...(profile.tags ?? []),
+        ];
+        return searchableValues.some((value) =>
+          value?.toLowerCase().includes(query),
+        );
       });
     }
 
     return filtered;
-  }, [profiles, selectedGroupId, searchQuery]);
+  }, [
+    groupsById,
+    knownGroupIds,
+    profiles,
+    searchQuery,
+    selectedGroupId,
+    storedProxiesById,
+    vpnConfigsById,
+  ]);
 
   // Update loading states
   const isLoading = profilesLoading || groupsLoading || proxiesLoading;
@@ -1570,11 +1668,15 @@ export default function Home() {
     <div className="flex h-dvh flex-col bg-background font-(family-name:--font-geist-sans)">
       <CloseConfirmDialog />
       <HomeHeader
-        onCreateProfileDialogOpen={setCreateProfileDialogOpen}
+        onCreateProfileDialogOpen={handleCreateProfileDialogOpen}
+        onCreateGroup={() => {
+          setCreateGroupDialogOpen(true);
+        }}
         searchQuery={searchQuery}
         onSearchQueryChange={setSearchQuery}
         groups={groupsData}
         totalProfiles={profiles.length}
+        ungroupedProfiles={ungroupedProfilesCount}
         selectedGroupId={selectedGroupId}
         onGroupSelect={handleSelectGroup}
         pageTitle={subPageTitle}
@@ -1587,6 +1689,9 @@ export default function Home() {
               {isLoading && groupsData.length === 0 ? null : null}
               <ProfilesDataTable
                 profiles={filteredProfiles}
+                allProfiles={profiles}
+                groups={groupsData}
+                isFiltering={searchQuery.trim().length > 0}
                 infoDialogProfile={profileInfoDialog}
                 onInfoDialogProfileChange={setProfileInfoDialog}
                 onLaunchProfile={launchProfile}
@@ -1604,6 +1709,12 @@ export default function Home() {
                 isUpdating={isUpdating}
                 onDeleteSelectedProfiles={handleDeleteSelectedProfiles}
                 onAssignProfilesToGroup={handleAssignProfilesToGroup}
+                onAssignProfilesToProxy={handleAssignProfilesToProxy}
+                onCopyCookiesToProfiles={handleCopyCookiesToProfiles}
+                onCreateProfileInGroup={handleCreateProfileInGroup}
+                onGroupDeleted={handleGroupDeletedFromList}
+                onRunProfiles={requestBulkRun}
+                onStopProfiles={requestBulkStop}
                 selectedGroupId={selectedGroupId}
                 selectedProfiles={selectedProfiles}
                 onSelectedProfilesChange={setSelectedProfiles}
@@ -1613,15 +1724,12 @@ export default function Home() {
                 onBulkCopyCookies={handleBulkCopyCookies}
                 onBulkRun={handleBulkRun}
                 onBulkStop={handleBulkStop}
-                bulkActionsUnlocked={automationUnlocked}
                 onBulkExtensionGroupAssignment={
                   handleBulkExtensionGroupAssignment
                 }
                 onAssignExtensionGroup={handleAssignExtensionGroup}
                 onOpenProfileSyncDialog={handleOpenProfileSyncDialog}
                 onToggleProfileSync={handleToggleProfileSync}
-                crossOsUnlocked={crossOsUnlocked}
-                syncUnlocked={syncUnlocked}
                 getProfileSyncInfo={getProfileSyncInfo}
                 onLaunchWithSync={(profile) => {
                   setSyncLeaderProfile(profile);
@@ -1693,7 +1801,6 @@ export default function Home() {
                 setExtensionManagementDialogOpen(false);
                 setCurrentPage("profiles");
               }}
-              limitedMode={false}
               subPage={currentPage === "extensions"}
               initialTab={extensionManagementInitialTab}
             />
@@ -1706,7 +1813,6 @@ export default function Home() {
                 setImportProfileDialogOpen(false);
                 setCurrentPage("profiles");
               }}
-              crossOsUnlocked={crossOsUnlocked}
               subPage={currentPage === "import"}
             />
           )}
@@ -1733,10 +1839,27 @@ export default function Home() {
         isOpen={createProfileDialogOpen}
         onClose={() => {
           setCreateProfileDialogOpen(false);
+          setCreateProfileTargetGroupId(undefined);
         }}
         onCreateProfile={handleCreateProfile}
-        selectedGroupId={selectedGroupId}
-        crossOsUnlocked={crossOsUnlocked}
+        selectedGroupId={
+          createProfileTargetGroupId === undefined
+            ? selectedGroupId === UNGROUPED_PROFILE_GROUP_ID
+              ? "__all__"
+              : selectedGroupId
+            : (createProfileTargetGroupId ?? "__all__")
+        }
+      />
+
+      <CreateGroupDialog
+        isOpen={createGroupDialogOpen}
+        onClose={() => {
+          setCreateGroupDialogOpen(false);
+        }}
+        onGroupCreated={(group) => {
+          setSelectedGroupId(group.id);
+          setSelectedProfiles([]);
+        }}
       />
 
       <CommandPalette
@@ -1854,7 +1977,6 @@ export default function Home() {
             ? runningProfiles.has(currentProfileForWayfernConfig.id)
             : false
         }
-        crossOsUnlocked={crossOsUnlocked}
       />
 
       <GroupAssignmentDialog
@@ -1977,7 +2099,6 @@ export default function Home() {
         isOpen={syncConfigDialogOpen}
         onClose={(loginOccurred) => {
           setSyncConfigDialogOpen(false);
-          void checkSelfHostedSync();
           if (loginOccurred) {
             setSyncAllDialogOpen(true);
           }
@@ -2037,7 +2158,7 @@ export default function Home() {
           termsAccepted === true &&
           trialStatus?.type === "Expired" &&
           !trialAcknowledged &&
-          !crossOsUnlocked
+          !hasActiveHostedPlan
         }
         onClose={checkTrialStatus}
       />

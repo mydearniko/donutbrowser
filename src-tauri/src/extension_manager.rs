@@ -432,7 +432,7 @@ impl ExtensionManager {
       }
     }
 
-    ext.updated_at = now_secs();
+    ext.updated_at = crate::proxy_manager::next_updated_at(Some(ext.updated_at));
 
     let metadata_path = self.get_metadata_path(id);
     let json = serde_json::to_string_pretty(&ext)?;
@@ -464,7 +464,6 @@ impl ExtensionManager {
     if ext_dir.exists() {
       fs::remove_dir_all(&ext_dir)?;
     }
-
     // Remove from all groups
     let mut groups_data = self.load_groups_data()?;
     for group in &mut groups_data.groups {
@@ -615,7 +614,7 @@ impl ExtensionManager {
     if let Some(new_ids) = extension_ids {
       group.extension_ids = new_ids;
     }
-    group.updated_at = now_secs();
+    group.updated_at = crate::proxy_manager::next_updated_at(Some(group.updated_at));
 
     let updated = group.clone();
     self.save_groups_data(&data)?;
@@ -713,7 +712,7 @@ impl ExtensionManager {
 
     if !group.extension_ids.contains(&extension_id.to_string()) {
       group.extension_ids.push(extension_id.to_string());
-      group.updated_at = now_secs();
+      group.updated_at = crate::proxy_manager::next_updated_at(Some(group.updated_at));
     }
 
     let updated = group.clone();
@@ -748,7 +747,7 @@ impl ExtensionManager {
       .ok_or_else(|| format!("Extension group with id '{group_id}' not found"))?;
 
     group.extension_ids.retain(|eid| eid != extension_id);
-    group.updated_at = now_secs();
+    group.updated_at = crate::proxy_manager::next_updated_at(Some(group.updated_at));
 
     let updated = group.clone();
     self.save_groups_data(&data)?;
@@ -883,7 +882,6 @@ impl ExtensionManager {
   pub fn install_extensions_for_profile(
     &self,
     profile: &crate::profile::BrowserProfile,
-    _profile_data_path: &std::path::Path,
   ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let group_id = match &profile.extension_group_id {
       Some(id) => id,
@@ -901,11 +899,10 @@ impl ExtensionManager {
 
     let mut extension_paths = Vec::new();
 
-    // Unpack Chromium extensions and return paths for --load-extension
+    // Unpack Chromium extensions once per source revision and return stable
+    // paths for --load-extension. Running browsers may still use an older
+    // revision, so launch never removes another revision's directory.
     let unpacked_base = extensions_base_dir().join("unpacked");
-    if unpacked_base.exists() {
-      fs::remove_dir_all(&unpacked_base)?;
-    }
     fs::create_dir_all(&unpacked_base)?;
 
     for ext_id in &group.extension_ids {
@@ -915,18 +912,38 @@ impl ExtensionManager {
         }
         let src_file = self.get_file_dir(ext_id).join(&ext.file_name);
         if src_file.exists() {
-          let unpack_dir = unpacked_base.join(ext_id);
-          fs::create_dir_all(&unpack_dir)?;
-
-          // Extract .crx or .zip
-          match Self::unpack_extension(&src_file, &unpack_dir) {
-            Ok(()) => {
-              extension_paths.push(unpack_dir.to_string_lossy().to_string());
+          let metadata = fs::metadata(&src_file)?;
+          let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+          let revision = format!("{}-{}-{modified}", ext.updated_at, metadata.len());
+          let extension_cache = unpacked_base.join(ext_id);
+          let unpack_dir = extension_cache.join(&revision);
+          if !unpack_dir.join("manifest.json").is_file() {
+            fs::create_dir_all(&extension_cache)?;
+            let staging = extension_cache.join(format!(".{revision}-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&staging)?;
+            if let Err(error) = Self::unpack_extension(&src_file, &staging) {
+              let _ = fs::remove_dir_all(&staging);
+              log::warn!("Failed to unpack extension '{}': {}", ext.name, error);
+              continue;
             }
-            Err(e) => {
-              log::warn!("Failed to unpack extension '{}': {}", ext.name, e);
+            match fs::rename(&staging, &unpack_dir) {
+              Ok(()) => {}
+              Err(_) if unpack_dir.join("manifest.json").is_file() => {
+                let _ = fs::remove_dir_all(&staging);
+              }
+              Err(error) => {
+                let _ = fs::remove_dir_all(&staging);
+                log::warn!("Failed to commit extension '{}': {}", ext.name, error);
+                continue;
+              }
             }
           }
+          extension_paths.push(unpack_dir.to_string_lossy().to_string());
         }
       }
     }

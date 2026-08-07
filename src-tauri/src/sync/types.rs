@@ -105,6 +105,26 @@ pub struct Tombstone {
   pub deleted_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SyncCapabilities {
+  #[serde(rename = "bulkTransfer", default)]
+  pub bulk_transfer: bool,
+  #[serde(rename = "profileIndex", default)]
+  pub profile_index: bool,
+  #[serde(rename = "maxBundleItems", default)]
+  pub max_bundle_items: usize,
+  #[serde(rename = "maxBundleBytes", default)]
+  pub max_bundle_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkTransferResponse {
+  #[serde(rename = "itemCount")]
+  pub item_count: usize,
+  #[serde(rename = "totalBytes")]
+  pub total_bytes: u64,
+}
+
 // Batch presign types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresignUploadBatchItem {

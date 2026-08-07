@@ -7,7 +7,7 @@ export class StatResponseDto {
   lastModified?: string;
   size?: number;
   // User-defined S3 object metadata (lowercased keys, no `x-amz-meta-` prefix).
-  // Carries `updated-at` for sync conflict resolution via HEAD (no body GET).
+  // Carries reconciliation hashes/timestamps via HEAD (no body GET).
   metadata?: Record<string, string>;
 }
 
@@ -71,6 +71,24 @@ export class SubscribeEventDto {
   key?: string;
   lastModified?: string;
   size?: number;
+  sourceId?: string;
+}
+
+export class SyncCapabilitiesResponseDto {
+  bulkTransfer: boolean;
+  profileIndex: boolean;
+  maxBundleItems: number;
+  maxBundleBytes: number;
+}
+
+export class BulkDownloadRequestDto {
+  prefix: string;
+  paths: string[];
+}
+
+export class BulkTransferResponseDto {
+  itemCount: number;
+  totalBytes: number;
 }
 
 // Batch presign DTOs

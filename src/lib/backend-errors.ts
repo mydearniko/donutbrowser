@@ -31,7 +31,10 @@ export type BackendErrorCode =
   | "CANNOT_MODIFY_CLOUD_MANAGED_PROXY"
   | "SYNC_LOCKED_BY_PROFILE"
   | "SYNC_NOT_CONFIGURED"
-  | "FINGERPRINT_REQUIRES_PRO"
+  | "SYNC_DEVICE_ID_INVALID"
+  | "SYNC_DEVICE_NAME_INVALID"
+  | "SYNC_DEVICE_ID_BUSY"
+  | "PROFILE_SYNC_PREPARE_FAILED"
   | "PROXY_NOT_WORKING"
   | "PROXY_PAYMENT_REQUIRED"
   | "VPN_NOT_WORKING"
@@ -139,8 +142,14 @@ export function translateBackendError(t: TFunction, err: unknown): string {
       return t("backendErrors.syncLockedByProfile");
     case "SYNC_NOT_CONFIGURED":
       return t("backendErrors.syncNotConfigured");
-    case "FINGERPRINT_REQUIRES_PRO":
-      return t("backendErrors.fingerprintRequiresPro");
+    case "SYNC_DEVICE_ID_INVALID":
+      return t("backendErrors.syncDeviceIdInvalid");
+    case "SYNC_DEVICE_NAME_INVALID":
+      return t("backendErrors.syncDeviceNameInvalid");
+    case "SYNC_DEVICE_ID_BUSY":
+      return t("backendErrors.syncDeviceIdBusy");
+    case "PROFILE_SYNC_PREPARE_FAILED":
+      return t("backendErrors.profileSyncPrepareFailed");
     case "PROXY_NOT_WORKING":
       return t("backendErrors.proxyNotWorking");
     case "PROXY_PAYMENT_REQUIRED":

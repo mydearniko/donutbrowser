@@ -4,7 +4,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GoPlus } from "react-icons/go";
-import { LuChevronLeft, LuChevronRight, LuSearch, LuX } from "react-icons/lu";
+import {
+  LuChevronLeft,
+  LuChevronRight,
+  LuFolderPlus,
+  LuSearch,
+  LuX,
+} from "react-icons/lu";
 import { getCurrentOS } from "@/lib/browser-utils";
 import { cn } from "@/lib/utils";
 import type { GroupWithCount } from "@/types";
@@ -29,13 +35,16 @@ const isInteractiveTarget = (target: EventTarget | null): boolean => {
 };
 
 const ALL_FILTER_ID = "__all__";
+const UNGROUPED_FILTER_ID = "__ungrouped__";
 
 interface Props {
   onCreateProfileDialogOpen: (open: boolean) => void;
+  onCreateGroup: () => void;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
   groups: GroupWithCount[];
   totalProfiles: number;
+  ungroupedProfiles: number;
   selectedGroupId: string | null;
   onGroupSelect: (groupId: string) => void;
   pageTitle?: string;
@@ -43,10 +52,12 @@ interface Props {
 
 const HomeHeader = ({
   onCreateProfileDialogOpen,
+  onCreateGroup,
   searchQuery,
   onSearchQueryChange,
   groups,
   totalProfiles,
+  ungroupedProfiles,
   selectedGroupId,
   onGroupSelect,
   pageTitle,
@@ -150,7 +161,16 @@ const HomeHeader = ({
   const groupsScrollRef = useRef<HTMLDivElement | null>(null);
   const [groupsFadeLeft, setGroupsFadeLeft] = useState(false);
   const [groupsFadeRight, setGroupsFadeRight] = useState(false);
+  const groupStripLayoutKey = [
+    ...groups.map((group) => `${group.id}:${group.name}:${group.count}`),
+    ...(ungroupedProfiles > 0 ? [`ungrouped:${ungroupedProfiles}`] : []),
+  ].join("|");
   useEffect(() => {
+    if (!groupStripLayoutKey) {
+      setGroupsFadeLeft(false);
+      setGroupsFadeRight(false);
+      return;
+    }
     const el = groupsScrollRef.current;
     if (!el) return;
     const update = () => {
@@ -165,7 +185,7 @@ const HomeHeader = ({
       el.removeEventListener("scroll", update);
       ro.disconnect();
     };
-  }, []);
+  }, [groupStripLayoutKey]);
 
   const isWindows = platform === "windows";
 
@@ -258,6 +278,29 @@ const HomeHeader = ({
                 </button>
               );
             })()}
+            {ungroupedProfiles > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  onGroupSelect(
+                    selectedGroupId === UNGROUPED_FILTER_ID
+                      ? ALL_FILTER_ID
+                      : UNGROUPED_FILTER_ID,
+                  );
+                }}
+                className={cn(
+                  "flex h-7 shrink-0 items-center gap-1.5 px-1 text-xs transition-colors duration-100",
+                  selectedGroupId === UNGROUPED_FILTER_ID
+                    ? "font-medium text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <span>{t("groups.noGroup")}</span>
+                <span className="text-[11px] text-muted-foreground tabular-nums">
+                  {ungroupedProfiles}
+                </span>
+              </button>
+            )}
             {groups.map((group) => {
               const active = selectedGroupId === group.id;
               return (
@@ -301,6 +344,24 @@ const HomeHeader = ({
             </button>
           )}
         </div>
+      )}
+
+      {showProfileToolbar && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="size-7 shrink-0"
+              onClick={onCreateGroup}
+              aria-label={t("groups.add")}
+            >
+              <LuFolderPlus className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t("groups.add")}</TooltipContent>
+        </Tooltip>
       )}
 
       {!showProfileToolbar && <div className="flex-1" />}

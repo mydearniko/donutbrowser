@@ -165,7 +165,6 @@
       "passwordSaved": "暗号化パスワードが設定されました",
       "passwordMismatch": "パスワードが一致しません",
       "passwordTooShort": "パスワードは8文字以上である必要があります",
-      "requiresProOrOwner": "プロファイルの暗号化はProユーザーとチームオーナーのみ利用できます。",
       "validatePassword": "確認",
       "validateDialog": {
         "title": "暗号化パスワードを確認",
@@ -173,7 +172,8 @@
         "submit": "確認",
         "matchToast": "パスワードが一致しました",
         "mismatchToast": "パスワードが一致しません"
-      }
+      },
+      "teamOwnerRequired": "プロファイルの暗号化を管理できるのはチーム所有者のみです。"
     },
     "commercial": {
       "title": "商用ライセンス",
@@ -270,7 +270,6 @@
       "stopLeader": "このプロフィールとすべてのフォロワーを停止",
       "stopFollower": "{{leaderName}}のアクションを追従中",
       "desyncedTooltip": "{{url}}で同期に失敗しました",
-      "paidFeature": "シンクロナイザーは有料機能です",
       "wayfernOnly": "Wayfernプロフィールのみ同期可能です",
       "selectFollowers": "フォロワープロフィールを選択",
       "selectFollowersDesc": "リーダープロフィールのアクションを複製するプロフィールを選択してください。停止中のWayfernプロフィールのみ選択できます。",
@@ -307,8 +306,7 @@
       "assignExtensionGroup": "拡張機能グループを割り当て",
       "copyCookies": "Cookieをコピー",
       "runSelected": "選択を実行",
-      "stopSelected": "選択を停止",
-      "proRequired": "一括実行・停止には Pro プランが必要です"
+      "stopSelected": "選択を停止"
     },
     "passwordProtectedBadge": "パスワード保護",
     "launchHook": {
@@ -381,7 +379,8 @@
       "description": "ディスク上のプロファイルデータを暗号化します。起動に必要です。"
     },
     "downloadingSubtitle": "ダウンロード中…",
-    "browsersDownloading": "ブラウザをダウンロード中です。ダウンロードが完了するとプロファイルを作成できます。"
+    "browsersDownloading": "ブラウザをダウンロード中です。ダウンロードが完了するとプロファイルを作成できます。",
+    "moreOptions": "その他のオプション"
   },
   "deleteDialog": {
     "title": "プロファイルを削除",
@@ -406,8 +405,10 @@
       "disableSync": "同期を無効にする",
       "editProxy": "プロキシを編集",
       "deleteProxy": "プロキシを削除",
-      "cannotDelete_one": "削除できません: {{count}} プロファイルで使用中",
-      "cannotDelete_other": "削除できません: {{count}} プロファイルで使用中",
+      "deleteUnlinks_one": "削除して {{count}} プロファイルをダイレクトに切り替え",
+      "deleteUnlinks_other": "削除して {{count}} プロファイルをダイレクトに切り替え",
+      "deleteDescriptionWithUsage_one": "この操作は元に戻せません。プロキシ \"{{name}}\" を完全に削除し、{{count}} プロファイルをダイレクトに切り替えます。",
+      "deleteDescriptionWithUsage_other": "この操作は元に戻せません。プロキシ \"{{name}}\" を完全に削除し、{{count}} プロファイルをダイレクトに切り替えます。",
       "syncEnabled": "同期が有効になりました",
       "syncDisabled": "同期が無効になりました",
       "updateSyncFailed": "同期の更新に失敗しました",
@@ -419,7 +420,31 @@
       "newVpn": "新しいVPN",
       "protocolCol": "プロトコル",
       "hostPort": "ホスト : ポート",
-      "title": "プロキシと VPN"
+      "title": "プロキシと VPN",
+      "searchPlaceholder": "名前、ホスト、IP、場所を検索...",
+      "filterAll": "すべての状態",
+      "filterWorking": "動作中",
+      "filterFailed": "失敗",
+      "filterUnchecked": "未確認",
+      "filterUsed": "使用中",
+      "filterUnused": "未使用",
+      "protocolAll": "すべてのプロトコル",
+      "filteredCount": "{{total}}件中{{shown}}件のプロキシ",
+      "workingCount": "動作中 {{count}}",
+      "failedCount": "失敗 {{count}}",
+      "uncheckedCount": "未確認 {{count}}",
+      "usedCount": "使用中 {{count}}",
+      "noMatches": "フィルターに一致するプロキシはありません。",
+      "resultRange": "{{total}}件中 {{start}}–{{end}}",
+      "rowsPerPage": "1ページの行数",
+      "pageStatus": "{{pages}}ページ中{{page}}ページ",
+      "previousPage": "前のページ",
+      "nextPage": "次のページ",
+      "bulkCheckResult": "{{count}}件を確認：動作中{{working}}件、失敗{{failed}}件",
+      "checkSelected": "選択したプロキシを確認",
+      "copySelected": "選択したプロキシURLをコピー",
+      "copiedSelected": "{{count}}件のプロキシURLをコピーしました",
+      "copyFailed": "プロキシURLをコピーできませんでした"
     },
     "add": "プロキシを追加",
     "edit": "プロキシを編集",
@@ -846,8 +871,7 @@
       "selectFile": "ファイルを選択",
       "preview": "{{count}}件のCookieが見つかりました",
       "success": "{{imported}}件のCookieをインポートしました（{{replaced}}件を置換）",
-      "error": "Cookieのインポートに失敗しました",
-      "proFeature": "Cookieのインポートはプロ機能です"
+      "error": "Cookieのインポートに失敗しました"
     },
     "export": {
       "title": "Cookieのエクスポート",
@@ -1053,7 +1077,6 @@
     "productSub": "プロダクトサブ",
     "brand": "ブランド",
     "brandVersion": "ブランドバージョン",
-    "proFeature": "これはPro機能です",
     "generateFingerprint": "フィンガープリントを生成",
     "refreshFingerprint": "フィンガープリントを更新",
     "canvasNoiseSeedPlaceholder": "キャンバスフィンガープリント用のシード文字列を入力",
@@ -1193,9 +1216,7 @@
       "cannotWhileRunning": "パスワードを変更する前にプロファイルを停止してください。"
     },
     "fingerprint": {
-      "notSupported": "フィンガープリント編集は Wayfern プロファイルでのみ利用できます。",
-      "lockedTitle": "フィンガープリントの表示と編集は Pro 機能です",
-      "lockedDescription": "デバイス情報はすべてのプロファイルで保護されています。プロファイルのフィンガープリントを表示・編集するには、有効な有料プランが必要です。"
+      "notSupported": "フィンガープリント編集は Wayfern プロファイルでのみ利用できます。"
     },
     "syncStatusValue": {
       "waiting": "待機中",
@@ -1212,7 +1233,6 @@
     "extensionsTab": "拡張機能",
     "groupsTab": "グループ",
     "managedNotice": "ここで管理される拡張機能は、起動時にプロファイルに手動でインストールされた拡張機能を置き換えます。",
-    "proRequired": "拡張機能管理はプロ機能です",
     "empty": "まだ拡張機能がアップロードされていません。",
     "noGroups": "まだ拡張機能グループが作成されていません。",
     "createGroup": "グループを作成",
@@ -1270,14 +1290,6 @@
       "groupsDescription": "{{count}}件の拡張機能グループを削除しますか？ {{names}}",
       "confirmButton": "削除"
     }
-  },
-  "pro": {
-    "badge": "PRO",
-    "fingerprintLocked": "フィンガープリント編集はプロ機能です",
-    "cookieCopyLocked": "Cookieのコピーはプロ機能です",
-    "cookieImportLocked": "Cookieのインポートはプロ機能です",
-    "cookieExportLocked": "Cookieのエクスポートはプロ機能です",
-    "cookieManagementLocked": "Cookie管理はプロ機能です"
   },
   "dnsBlocklist": {
     "title": "DNSブロックリスト",
@@ -1457,7 +1469,8 @@
     "noneOption": "なし",
     "noValidProfiles": "有効なプロファイルが選択されていません。",
     "vpnGroupHeading": "VPN",
-    "failedFallback": "プロファイルへのプロキシ/VPN の割り当てに失敗しました"
+    "failedFallback": "プロファイルへのプロキシ/VPN の割り当てに失敗しました",
+    "limitedResults": "{{total}}件中、先頭の{{shown}}件を表示しています。検索を絞り込んでください。"
   },
   "groupAssignment": {
     "title": "グループを割り当てる",
@@ -1647,7 +1660,9 @@
     "tagsHeader": "タグ",
     "noteHeader": "メモ",
     "vpnsHeading": "VPN",
-    "createByCountryHeading": "国別に作成"
+    "createByCountryHeading": "国別に作成",
+    "editAssignedProxy": "割り当て済みプロキシを編集：{{name}}",
+    "proxyPickerLimited": "{{total}}件中、先頭の{{shown}}件を表示しています。検索を絞り込んでください。"
   },
   "dataTableActionBar": {
     "selected": "{{count}} 件選択",
@@ -1794,7 +1809,6 @@
     "cookieDbLocked": "Cookie を読み取れません — データベースがロックされています。ブラウザを閉じてから再試行してください。",
     "cookieDbUnavailable": "Cookie を読み取れません — Cookie ストアを利用できません。",
     "selfHostedRequiresLogout": "セルフホストサーバーを設定する前に Donut アカウントからサインアウトしてください。",
-    "fingerprintRequiresPro": "フィンガープリントの表示または編集には有効な有料プランが必要です。保護機能はすべてのプランに含まれています。",
     "proxyNotWorking": "選択したプロキシが機能していないため、プロファイルは作成されませんでした。",
     "proxyPaymentRequired": "選択したプロキシは支払いが必要です（402）。サブスクリプションが期限切れの可能性があります。そのため、プロファイルは作成されませんでした。",
     "vpnNotWorking": "選択したVPNが機能していないため、プロファイルは作成されませんでした。",
@@ -1802,7 +1816,11 @@
     "updateChecksumsUnavailable": "アップデート {{version}} のチェックサムファイルを取得できなかったため、検証できませんでした。アップデートはインストールされませんでした。後で再試行されます。",
     "updateChecksumMismatch": "ダウンロードしたアップデートファイル {{file}} はチェックサム検証に失敗したため破棄されました。もう一度お試しください。",
     "nameCannotBeEmpty": "名前を空にすることはできません",
-    "wayfernVersionNotAvailable": "Wayfernのバージョン{{requested}}はダウンロードできません。現在のバージョンは{{current}}です。"
+    "wayfernVersionNotAvailable": "Wayfernのバージョン{{requested}}はダウンロードできません。現在のバージョンは{{current}}です。",
+    "syncDeviceIdInvalid": "デバイス ID は 3～128 文字で、英数字、ピリオド、アンダースコア、ハイフンのみ使用できます。",
+    "syncDeviceNameInvalid": "デバイス名は 1～80 文字で、制御文字は使用できません。",
+    "syncDeviceIdBusy": "デバイス ID を変更する前に、すべての同期プロファイルを閉じ、進行中の同期転送が完了するまで待ってください。",
+    "profileSyncPrepareFailed": "同期からこのプロファイルを安全に準備できませんでした。接続を確認して、もう一度お試しください。"
   },
   "rail": {
     "profiles": "プロファイル",
@@ -1882,11 +1900,32 @@
       "connectionStatus": "接続:",
       "statusUnknown": "未テスト",
       "testConnection": "接続をテスト",
-      "disconnect": "切断"
+      "disconnect": "切断",
+      "syncDefaults": {
+        "title": "プロファイル同期の既定値",
+        "description": "永続プロファイルをリアルタイム同期に参加させる方法を管理します。",
+        "newProfiles": "新規プロファイルを通常同期",
+        "newProfilesDescription": "プロファイルの作成、複製、インポート後に通常同期を自動で有効にします。",
+        "enabledToast": "通常同期を既定に設定しました",
+        "disabledToast": "新規プロファイルは同期無効で開始します",
+        "everywhereDescription": "対象となるすべてのプロファイルで通常同期を有効にします。暗号化プロファイルは暗号化を維持し、実行中、一時、別OSのプロファイルはスキップします。",
+        "enableEverywhere": "すべてで通常同期を使用",
+        "applySuccess": "通常同期を有効にしました",
+        "applyPartial": "一部のプロファイルを更新できませんでした",
+        "applyResult": "有効化: {{enabled}}、有効済み: {{alreadyEnabled}}、スキップ: {{skipped}}、失敗: {{failed}}。",
+        "requiresConnection": "プロファイルの既定値を管理する前に同期接続を保存してください。"
+      },
+      "deviceIdentity": {
+        "title": "デバイス識別情報",
+        "description": "リアルタイムイベントとプロファイルのロックに使用する固定の識別情報です。",
+        "name": "デバイス名",
+        "id": "デバイス ID",
+        "changeHint": "インストールごとに一意の ID を使用してください。変更する前に同期プロファイルを閉じ、進行中の転送が完了するまで待ってください。",
+        "regenerate": "新しい ID を生成",
+        "saved": "デバイス識別情報を保存しました"
+      }
     },
-    "deviceOrdinal": "{{count}} 台中 {{ordinal}} 台目",
-    "automationPrimaryOnly": "ブラウザの自動化はプライマリデバイス（デバイス1）でのみ実行できます。ここで使用するには、そのデバイスでサインアウトしてください。",
-    "automationActiveHere": "ブラウザの自動化はこのデバイスで有効です。"
+    "deviceOrdinal": "{{count}} 台中 {{ordinal}} 台目"
   },
   "shortcutsPage": {
     "title": "キーボードショートカット",
@@ -2006,10 +2045,6 @@
       "commercialDesc": "2週間の評価期間は無料です。その後は有料プランが必要で、これによりプロジェクトの維持と発展が支えられます。"
     }
   },
-  "wayfernBlocked": {
-    "title": "ブラウザの自動化が一時停止しました",
-    "description": "通常は複数のデバイスで同時にサインインしたことが原因で、アカウントのProブラウザ機能が一時的に制限されました。他のデバイスからサインアウトし、プロファイルを再起動すると復元されます。"
-  },
   "wayfernConfigDialog": {
     "titleView": "フィンガープリント設定を表示 - {{name}} ({{browser}})",
     "titleConfigure": "フィンガープリント設定 - {{name}} ({{browser}})",
@@ -2020,5 +2055,9 @@
   },
   "cookieCopy": {
     "noOtherTargets": "他に Wayfern プロファイルが選択されていません"
+  },
+  "wayfernTokenUnavailable": {
+    "title": "Wayfernトークンを利用できません",
+    "description": "ホストされたWayfernトークンを更新できませんでした。ローカルプロファイルと自動化は引き続き利用できますが、トークンを使用するフィンガープリント機能が制限される場合があります。"
   }
 }

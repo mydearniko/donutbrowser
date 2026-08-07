@@ -370,7 +370,7 @@ impl VpnStorage {
   pub fn update_config_name(&self, id: &str, new_name: &str) -> Result<VpnConfig, VpnError> {
     let mut config = self.load_config(id)?;
     config.name = new_name.to_string();
-    config.updated_at = Some(crate::proxy_manager::now_secs());
+    config.updated_at = Some(crate::proxy_manager::next_updated_at(config.updated_at));
     self.save_config(&config)?;
     Ok(config)
   }

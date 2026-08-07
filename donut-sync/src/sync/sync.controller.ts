@@ -30,6 +30,7 @@ import type {
   PresignUploadResponseDto,
   StatRequestDto,
   StatResponseDto,
+  SyncCapabilitiesResponseDto,
 } from "./dto/sync.dto.js";
 import { SyncService } from "./sync.service.js";
 
@@ -40,6 +41,29 @@ export class SyncController {
 
   private getUserContext(req: Request): UserContext {
     return (req as unknown as Record<string, unknown>).user as UserContext;
+  }
+
+  private getRequestOrigin(req: Request): string {
+    const forwardedProtocol = req
+      .get("x-forwarded-proto")
+      ?.split(",")[0]
+      ?.trim();
+    const forwardedHost = req.get("x-forwarded-host")?.split(",")[0]?.trim();
+    const protocol = forwardedProtocol || req.protocol;
+    const host = forwardedHost || req.get("host");
+    return this.syncService.resolvePublicUrl(`${protocol}://${host}`);
+  }
+
+  private getSourceId(req: Request): string | undefined {
+    const sourceId = req.get("x-donut-sync-client");
+    return sourceId && /^[a-zA-Z0-9._-]{1,128}$/.test(sourceId)
+      ? sourceId
+      : undefined;
+  }
+
+  @Get("capabilities")
+  capabilities(): SyncCapabilitiesResponseDto {
+    return this.syncService.getCapabilities();
   }
 
   @Post("stat")
@@ -57,7 +81,12 @@ export class SyncController {
     @Body() dto: PresignUploadRequestDto,
     @Req() req: Request,
   ): Promise<PresignUploadResponseDto> {
-    return this.syncService.presignUpload(dto, this.getUserContext(req));
+    return this.syncService.presignUpload(
+      dto,
+      this.getUserContext(req),
+      this.getRequestOrigin(req),
+      this.getSourceId(req),
+    );
   }
 
   @Post("presign-download")
@@ -66,7 +95,11 @@ export class SyncController {
     @Body() dto: PresignDownloadRequestDto,
     @Req() req: Request,
   ): Promise<PresignDownloadResponseDto> {
-    return this.syncService.presignDownload(dto, this.getUserContext(req));
+    return this.syncService.presignDownload(
+      dto,
+      this.getUserContext(req),
+      this.getRequestOrigin(req),
+    );
   }
 
   @Post("delete")
@@ -75,7 +108,11 @@ export class SyncController {
     @Body() dto: DeleteRequestDto,
     @Req() req: Request,
   ): Promise<DeleteResponseDto> {
-    return this.syncService.delete(dto, this.getUserContext(req));
+    return this.syncService.delete(
+      dto,
+      this.getUserContext(req),
+      this.getSourceId(req),
+    );
   }
 
   @Post("list")
@@ -87,13 +124,30 @@ export class SyncController {
     return this.syncService.list(dto, this.getUserContext(req));
   }
 
+  @Post("profile-manifests")
+  @HttpCode(200)
+  async profileManifests(
+    @Body() dto: ListRequestDto,
+    @Req() req: Request,
+  ): Promise<ListResponseDto> {
+    return this.syncService.listProfileManifests(
+      dto.prefix,
+      this.getUserContext(req),
+    );
+  }
+
   @Post("presign-upload-batch")
   @HttpCode(200)
   async presignUploadBatch(
     @Body() dto: PresignUploadBatchRequestDto,
     @Req() req: Request,
   ): Promise<PresignUploadBatchResponseDto> {
-    return this.syncService.presignUploadBatch(dto, this.getUserContext(req));
+    return this.syncService.presignUploadBatch(
+      dto,
+      this.getUserContext(req),
+      this.getRequestOrigin(req),
+      this.getSourceId(req),
+    );
   }
 
   @Post("presign-download-batch")
@@ -102,7 +156,11 @@ export class SyncController {
     @Body() dto: PresignDownloadBatchRequestDto,
     @Req() req: Request,
   ): Promise<PresignDownloadBatchResponseDto> {
-    return this.syncService.presignDownloadBatch(dto, this.getUserContext(req));
+    return this.syncService.presignDownloadBatch(
+      dto,
+      this.getUserContext(req),
+      this.getRequestOrigin(req),
+    );
   }
 
   @Post("delete-prefix")
@@ -111,16 +169,22 @@ export class SyncController {
     @Body() dto: DeletePrefixRequestDto,
     @Req() req: Request,
   ): Promise<DeletePrefixResponseDto> {
-    return this.syncService.deletePrefix(dto, this.getUserContext(req));
+    return this.syncService.deletePrefix(
+      dto,
+      this.getUserContext(req),
+      this.getSourceId(req),
+    );
   }
 
   @Get("subscribe")
   @Sse()
   subscribe(@Req() req: Request): Observable<MessageEvent> {
-    return this.syncService.subscribe(this.getUserContext(req), 5000).pipe(
-      map((event) => ({
-        data: event,
-      })),
-    );
+    return this.syncService
+      .subscribe(this.getUserContext(req), 1000, this.getSourceId(req))
+      .pipe(
+        map((event) => ({
+          data: event,
+        })),
+      );
   }
 }

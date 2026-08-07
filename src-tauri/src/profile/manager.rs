@@ -244,15 +244,16 @@ impl ProfileManager {
       // actually succeeded: on failure the fingerprint carries the HOST
       // timezone/locale, and a stamped signature would match at launch and
       // suppress the refresh that repairs it — latching the leak permanently.
+      let routing_signature = crate::wayfern_manager::WayfernManager::geo_signature(
+        proxy_id
+          .as_ref()
+          .and_then(|id| PROXY_MANAGER.get_proxy_settings_by_id(id))
+          .as_ref(),
+        None,
+        config.geoip.as_ref(),
+      );
       config.geo_proxy_signature = if geolocation_applied {
-        Some(crate::wayfern_manager::WayfernManager::geo_signature(
-          proxy_id
-            .as_ref()
-            .and_then(|id| PROXY_MANAGER.get_proxy_settings_by_id(id))
-            .as_ref(),
-          None,
-          config.geoip.as_ref(),
-        ))
+        Some(routing_signature.clone())
       } else {
         if !matches!(config.geoip.as_ref(), Some(serde_json::Value::Bool(false))) {
           log::warn!(
@@ -262,6 +263,26 @@ impl ProfileManager {
         None
       };
 
+      // This fingerprint has never been exposed by a browser session, so it
+      // is already the correct first value for randomize-on-launch. Mark it as
+      // prepared instead of booting a second hidden browser immediately on the
+      // profile's first launch. It is consumed once and the launch path then
+      // prepares the following session's independent fingerprint in the
+      // background.
+      if config.randomize_fingerprint_on_launch == Some(true) {
+        let location_is_ready = geolocation_applied
+          || matches!(config.geoip.as_ref(), Some(serde_json::Value::Bool(false)));
+        if let Some(fingerprint) = config.fingerprint.clone().filter(|_| location_is_ready) {
+          config.prepared_fingerprint = Some(fingerprint);
+          config.prepared_fingerprint_signature = Some(
+            crate::browser_runner::BrowserRunner::fingerprint_preparation_signature(
+              &config,
+              &routing_signature,
+            ),
+          );
+        }
+      }
+
       // Clear the proxy from config after fingerprint generation
       config.proxy = None;
 
@@ -270,7 +291,7 @@ impl ProfileManager {
       wayfern_config.clone()
     };
 
-    let profile = BrowserProfile {
+    let mut profile = BrowserProfile {
       id: profile_id,
       name: name.to_string(),
       browser: browser.to_string(),
@@ -316,6 +337,8 @@ impl ProfileManager {
       return Err(format!("Failed to create profile file for '{name}'").into());
     }
 
+    crate::sync::apply_default_profile_sync_mode(app_handle, &mut profile).await;
+
     log::info!("Profile '{name}' created successfully with ID: {profile_id}");
 
     // Emit profile creation event
@@ -327,6 +350,20 @@ impl ProfileManager {
   }
 
   pub fn save_profile(&self, profile: &BrowserProfile) -> Result<(), Box<dyn std::error::Error>> {
+    self.save_profile_metadata(profile)?;
+
+    // Update tag suggestions after any save
+    let _ = crate::tag_manager::TAG_MANAGER.lock().map(|tm| {
+      let _ = tm.rebuild_from_profiles(&self.list_profiles().unwrap_or_default());
+    });
+
+    Ok(())
+  }
+
+  fn save_profile_metadata(
+    &self,
+    profile: &BrowserProfile,
+  ) -> Result<(), Box<dyn std::error::Error>> {
     let profiles_dir = self.get_profiles_dir();
     let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
     let profile_file = profile_uuid_dir.join("metadata.json");
@@ -336,13 +373,14 @@ impl ProfileManager {
 
     let json = serde_json::to_string_pretty(profile)?;
     atomic_write(&profile_file, json.as_bytes())?;
-
-    // Update tag suggestions after any save
-    let _ = crate::tag_manager::TAG_MANAGER.lock().map(|tm| {
-      let _ = tm.rebuild_from_profiles(&self.list_profiles().unwrap_or_default());
-    });
-
     Ok(())
+  }
+
+  pub(crate) fn save_runtime_profile(
+    &self,
+    profile: &BrowserProfile,
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    self.save_profile_metadata(profile)
   }
 
   pub fn list_profiles(&self) -> Result<Vec<BrowserProfile>, Box<dyn std::error::Error>> {
@@ -401,6 +439,29 @@ impl ProfileManager {
     Ok(profiles)
   }
 
+  pub fn get_profile_by_id(
+    &self,
+    profile_id: uuid::Uuid,
+  ) -> Result<Option<BrowserProfile>, Box<dyn std::error::Error>> {
+    let metadata_file = self
+      .get_profiles_dir()
+      .join(profile_id.to_string())
+      .join("metadata.json");
+    if !metadata_file.is_file() {
+      return Ok(None);
+    }
+    let content = fs::read_to_string(&metadata_file)?;
+    let mut profile: BrowserProfile = serde_json::from_str(&content)?;
+    if profile.host_os.is_none() {
+      if let Some(os) = profile.resolved_os().map(str::to_string) {
+        profile.host_os = Some(os);
+        let json = serde_json::to_string_pretty(&profile)?;
+        atomic_write(&metadata_file, json.as_bytes())?;
+      }
+    }
+    Ok(Some(profile))
+  }
+
   pub fn rename_profile(
     &self,
     _app_handle: &tauri::AppHandle,
@@ -434,7 +495,7 @@ impl ProfileManager {
 
     // Update profile name (no need to move directories since we use UUID)
     profile.name = new_name.to_string();
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
 
     // Save profile with new name
     self.save_profile(&profile)?;
@@ -639,7 +700,7 @@ impl ProfileManager {
       }
 
       profile.group_id = group_id.clone();
-      profile.updated_at = Some(crate::proxy_manager::now_secs());
+      profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
       self.save_profile(&profile)?;
 
       crate::sync::queue_profile_sync_if_eligible(&profile);
@@ -694,7 +755,7 @@ impl ProfileManager {
       }
     }
     profile.tags = deduped;
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
 
     // Save profile
     self.save_profile(&profile)?;
@@ -731,7 +792,7 @@ impl ProfileManager {
 
     // Update note (trim whitespace, set to None if empty)
     profile.note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
 
     // Save profile
     self.save_profile(&profile)?;
@@ -767,7 +828,7 @@ impl ProfileManager {
       (hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit()))
         .then(|| format!("#{}", hex.to_lowercase()))
     });
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
 
     self.save_profile(&profile)?;
     crate::sync::queue_profile_sync_if_eligible(&profile);
@@ -793,7 +854,7 @@ impl ProfileManager {
       .ok_or_else(|| format!("Profile with ID '{profile_id}' not found"))?;
 
     profile.launch_hook = Self::normalize_launch_hook(launch_hook)?;
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
 
     self.save_profile(&profile)?;
 
@@ -825,7 +886,7 @@ impl ProfileManager {
       .ok_or_else(|| format!("Profile with ID '{profile_id}' not found"))?;
 
     profile.proxy_bypass_rules = rules;
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
 
     self.save_profile(&profile)?;
 
@@ -852,7 +913,7 @@ impl ProfileManager {
       .ok_or_else(|| format!("Profile with ID '{profile_id}' not found"))?;
 
     profile.dns_blocklist = dns_blocklist;
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
 
     self.save_profile(&profile)?;
 
@@ -1032,6 +1093,8 @@ impl ProfileManager {
     // isolation between a clone and its source.
     if let Some(cfg) = new_profile.wayfern_config.as_mut() {
       cfg.fingerprint = None;
+      cfg.prepared_fingerprint = None;
+      cfg.prepared_fingerprint_signature = None;
     }
 
     self.save_profile(&new_profile)?;
@@ -1137,7 +1200,7 @@ impl ProfileManager {
     // Update proxy settings and clear VPN (mutual exclusion)
     profile.proxy_id = proxy_id.clone();
     profile.vpn_id = None;
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
 
     // Save the updated profile
     self
@@ -1171,6 +1234,126 @@ impl ProfileManager {
     Ok(profile)
   }
 
+  /// Assign one proxy, one VPN, or a direct connection to many profiles in a
+  /// single metadata pass. The previous frontend loop re-read every profile
+  /// directory and emitted multiple events per row, which became painfully
+  /// slow for large selections.
+  pub async fn assign_profiles_network(
+    &self,
+    profile_ids: Vec<String>,
+    proxy_id: Option<String>,
+    vpn_id: Option<String>,
+  ) -> Result<usize, String> {
+    if proxy_id.is_some() && vpn_id.is_some() {
+      return Err(
+        serde_json::json!({
+          "code": "INTERNAL_ERROR",
+          "params": { "detail": "proxy_id and vpn_id are mutually exclusive" }
+        })
+        .to_string(),
+      );
+    }
+
+    if let Some(ref id) = proxy_id {
+      if crate::proxy_manager::PROXY_MANAGER
+        .get_proxy_settings_by_id(id)
+        .is_none()
+      {
+        return Err(serde_json::json!({ "code": "PROXY_NOT_FOUND" }).to_string());
+      }
+    }
+
+    if let Some(ref id) = vpn_id {
+      let storage = crate::vpn::VPN_STORAGE.lock().map_err(|error| {
+        serde_json::json!({
+          "code": "INTERNAL_ERROR",
+          "params": { "detail": error.to_string() }
+        })
+        .to_string()
+      })?;
+      if storage.load_config(id).is_err() {
+        return Err(serde_json::json!({ "code": "VPN_NOT_FOUND" }).to_string());
+      }
+    }
+
+    let profiles = self.list_profiles().map_err(|error| {
+      serde_json::json!({
+        "code": "INTERNAL_ERROR",
+        "params": { "detail": error.to_string() }
+      })
+      .to_string()
+    })?;
+    let profiles_by_id: std::collections::HashMap<uuid::Uuid, BrowserProfile> = profiles
+      .into_iter()
+      .map(|profile| (profile.id, profile))
+      .collect();
+    let mut requested_ids = Vec::with_capacity(profile_ids.len());
+    let mut seen = std::collections::HashSet::new();
+
+    for profile_id in profile_ids {
+      let id = uuid::Uuid::parse_str(&profile_id)
+        .map_err(|_| serde_json::json!({ "code": "INVALID_PROFILE_ID" }).to_string())?;
+      if !profiles_by_id.contains_key(&id) {
+        return Err(serde_json::json!({ "code": "PROFILE_NOT_FOUND" }).to_string());
+      }
+      if seen.insert(id) {
+        requested_ids.push(id);
+      }
+    }
+
+    let mut updated_profiles = Vec::with_capacity(requested_ids.len());
+    for id in requested_ids {
+      let mut profile = profiles_by_id[&id].clone();
+      if profile.proxy_id == proxy_id && profile.vpn_id == vpn_id {
+        continue;
+      }
+      profile.proxy_id = proxy_id.clone();
+      profile.vpn_id = vpn_id.clone();
+      profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
+      self.save_profile_metadata(&profile).map_err(|error| {
+        serde_json::json!({
+          "code": "INTERNAL_ERROR",
+          "params": { "detail": error.to_string() }
+        })
+        .to_string()
+      })?;
+      crate::sync::queue_profile_sync_if_eligible(&profile);
+      updated_profiles.push(profile);
+    }
+
+    if updated_profiles.is_empty() {
+      return Ok(0);
+    }
+
+    let _ = crate::tag_manager::TAG_MANAGER.lock().map(|manager| {
+      let _ = manager.rebuild_from_profiles(&self.list_profiles().unwrap_or_default());
+    });
+
+    if updated_profiles
+      .iter()
+      .any(|profile| profile.is_sync_enabled())
+    {
+      if let Some(ref id) = proxy_id {
+        let _ = crate::sync::enable_proxy_sync_if_needed(id).await;
+        if let Some(scheduler) = crate::sync::get_global_scheduler() {
+          scheduler.queue_proxy_sync(id.clone()).await;
+        }
+      }
+      if let Some(ref id) = vpn_id {
+        let _ = crate::sync::enable_vpn_sync_if_needed(id).await;
+        if let Some(scheduler) = crate::sync::get_global_scheduler() {
+          scheduler.queue_vpn_sync(id.clone()).await;
+        }
+      }
+    }
+
+    if let Err(error) = events::emit_empty("profiles-changed") {
+      log::warn!("Failed to emit profiles-changed after network assignment: {error}");
+    }
+
+    Ok(updated_profiles.len())
+  }
+
   pub async fn update_profile_vpn(
     &self,
     _app_handle: tauri::AppHandle,
@@ -1199,7 +1382,7 @@ impl ProfileManager {
     // Update VPN and clear proxy (mutual exclusion)
     profile.vpn_id = vpn_id.clone();
     profile.proxy_id = None;
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
 
     self
       .save_profile(&profile)
@@ -1230,6 +1413,31 @@ impl ProfileManager {
     Ok(profile)
   }
 
+  /// Unlink every profile currently assigned to `proxy_id`, falling back to
+  /// direct routing. Bumps each affected profile's `updated_at` so the new
+  /// (direct) routing wins under sync last-write-wins, persists it, and
+  /// queues a profile sync for synced profiles. Returns the number of
+  /// profiles that referenced the proxy, or an error if the profile list or
+  /// any metadata write failed.
+  pub fn unlink_proxy_from_profiles(
+    &self,
+    proxy_id: &str,
+  ) -> Result<usize, Box<dyn std::error::Error>> {
+    let profiles = self.list_profiles()?;
+    let mut unlinked = 0;
+    for mut profile in profiles {
+      if profile.proxy_id.as_deref() != Some(proxy_id) {
+        continue;
+      }
+      profile.proxy_id = None;
+      profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
+      self.save_profile_metadata(&profile)?;
+      crate::sync::queue_profile_sync_if_eligible(&profile);
+      unlinked += 1;
+    }
+    Ok(unlinked)
+  }
+
   pub fn update_profile_extension_group(
     &self,
     profile_id: &str,
@@ -1244,7 +1452,7 @@ impl ProfileManager {
       .ok_or_else(|| format!("Profile with ID '{profile_id}' not found"))?;
 
     profile.extension_group_id = extension_group_id.clone();
-    profile.updated_at = Some(crate::proxy_manager::now_secs());
+    profile.updated_at = Some(crate::proxy_manager::next_updated_at(profile.updated_at));
     self.save_profile(&profile)?;
 
     crate::sync::queue_profile_sync_if_eligible(&profile);
@@ -1278,9 +1486,32 @@ impl ProfileManager {
     app_handle: tauri::AppHandle,
     profile: &BrowserProfile,
   ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    self
+      .check_browser_status_inner(app_handle, profile, false)
+      .await
+  }
+
+  pub(crate) async fn check_browser_status_with_lifecycle_lock(
+    &self,
+    app_handle: tauri::AppHandle,
+    profile: &BrowserProfile,
+  ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    self
+      .check_browser_status_inner(app_handle, profile, true)
+      .await
+  }
+
+  async fn check_browser_status_inner(
+    &self,
+    app_handle: tauri::AppHandle,
+    profile: &BrowserProfile,
+    lifecycle_lock_held: bool,
+  ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     // Handle Wayfern profiles using WayfernManager-based status checking
     if profile.browser == "wayfern" {
-      return self.check_wayfern_status(&app_handle, profile).await;
+      return self
+        .check_wayfern_status(&app_handle, profile, lifecycle_lock_held)
+        .await;
     }
 
     // For non-wayfern browsers, use the existing PID-based logic
@@ -1420,12 +1651,24 @@ impl ProfileManager {
     &self,
     app_handle: &tauri::AppHandle,
     profile: &BrowserProfile,
+    lifecycle_lock_held: bool,
   ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let manager = self.wayfern_manager;
     let profiles_dir = self.get_profiles_dir();
     let profile_data_path =
       crate::ephemeral_dirs::get_effective_profile_path(profile, &profiles_dir);
     let profile_path_str = profile_data_path.to_string_lossy();
+
+    // A successful launch persists its PID before releasing the lifecycle
+    // lock. With no persisted PID there cannot be a recovered browser from a
+    // previous GUI process, so avoid an expensive all-process command-line
+    // scan on the normal closed-profile launch path.
+    if profile.process_id.is_none() {
+      if profile.ephemeral {
+        crate::ephemeral_dirs::remove_ephemeral_dir(&profile.id.to_string());
+      }
+      return Ok(false);
+    }
 
     // Check if there's a running Wayfern instance for this profile
     match manager.find_wayfern_by_profile(&profile_path_str).await {
@@ -1449,7 +1692,7 @@ impl ProfileManager {
           if latest.process_id != wayfern_process.processId {
             let old_pid = latest.process_id;
             latest.process_id = wayfern_process.processId;
-            if let Err(e) = self.save_profile(&latest) {
+            if let Err(e) = self.save_runtime_profile(&latest) {
               log::warn!("Warning: Failed to update Wayfern profile with process info: {e}");
             }
             if let (Some(prev), Some(new)) = (old_pid, wayfern_process.processId) {
@@ -1471,41 +1714,22 @@ impl ProfileManager {
         Ok(true)
       }
       None => {
-        // No running instance found, clear process ID if set
-        if profile.ephemeral {
-          crate::ephemeral_dirs::remove_ephemeral_dir(&profile.id.to_string());
-        }
-
-        let profiles_dir = self.get_profiles_dir();
-        let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
-        let metadata_file = profile_uuid_dir.join("metadata.json");
-        let metadata_exists = metadata_file.exists();
-
-        if metadata_exists {
-          let mut latest: BrowserProfile = match std::fs::read_to_string(&metadata_file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-          {
-            Some(p) => p,
-            None => profile.clone(),
-          };
-
-          if latest.process_id.is_some() {
-            latest.process_id = None;
-            if let Err(e) = self.save_profile(&latest) {
-              log::warn!("Warning: Failed to clear Wayfern profile process info: {e}");
-            }
-
-            if let Some(updated) = crate::auto_updater::AutoUpdater::instance()
-              .update_profile_to_latest_installed(app_handle, &latest)
-            {
-              latest = updated;
-            }
-
-            if let Err(e) = events::emit("profile-updated", &latest) {
-              log::warn!("Warning: Failed to emit profile update event: {e}");
-            }
+        // The child-process watcher normally reaches this shared finalizer
+        // immediately. This path is also the recovery fallback for a browser
+        // found through a process scan after the Donut GUI was restarted.
+        if let Some(pid) = profile.process_id {
+          let runner = crate::browser_runner::BrowserRunner::instance();
+          if lifecycle_lock_held {
+            runner
+              .handle_natural_browser_exit_with_lifecycle_lock(app_handle.clone(), profile.id, pid)
+              .await;
+          } else {
+            runner
+              .handle_natural_browser_exit(app_handle.clone(), profile.id, pid)
+              .await;
           }
+        } else if profile.ephemeral {
+          crate::ephemeral_dirs::remove_ephemeral_dir(&profile.id.to_string());
         }
         Ok(false)
       }
@@ -1630,6 +1854,56 @@ mod tests {
     let result_none = super::validate_launch_hook(None).unwrap();
     assert!(result_none.is_none());
   }
+
+  #[test]
+  fn test_unlink_proxy_from_profiles_clears_assignment_and_bumps_updated_at() {
+    let (manager, _temp_dir) = create_test_profile_manager();
+
+    let proxy_id = "proxy-delete-me";
+    let other_proxy = "proxy-keep";
+
+    let make = |name: &str, px: Option<&str>, updated_at: u64| BrowserProfile {
+      id: uuid::Uuid::new_v4(),
+      name: name.to_string(),
+      proxy_id: px.map(|s| s.to_string()),
+      updated_at: Some(updated_at),
+      ..Default::default()
+    };
+    let a = make("a", Some(proxy_id), 10);
+    let b = make("b", Some(proxy_id), 20);
+    let c = make("c", Some(other_proxy), 30);
+    let d = make("d", None, 40);
+    for p in [&a, &b, &c, &d] {
+      manager.save_profile_metadata(p).unwrap();
+    }
+
+    let unlinked = manager.unlink_proxy_from_profiles(proxy_id).unwrap();
+    assert_eq!(unlinked, 2);
+
+    // Reload from disk (unlink must persist) and map by id.
+    let by_id: std::collections::HashMap<_, _> = manager
+      .list_profiles()
+      .unwrap()
+      .into_iter()
+      .map(|p| (p.id, p))
+      .collect();
+
+    // a and b lost the proxy and got a bumped updated_at (last-write-wins).
+    let a2 = by_id.get(&a.id).unwrap();
+    assert_eq!(a2.proxy_id, None);
+    assert!(a2.updated_at.unwrap() > a.updated_at.unwrap());
+    let b2 = by_id.get(&b.id).unwrap();
+    assert_eq!(b2.proxy_id, None);
+    assert!(b2.updated_at.unwrap() > b.updated_at.unwrap());
+
+    // c (different proxy) and d (already direct) are untouched.
+    let c2 = by_id.get(&c.id).unwrap();
+    assert_eq!(c2.proxy_id, c.proxy_id);
+    assert_eq!(c2.updated_at, c.updated_at);
+    let d2 = by_id.get(&d.id).unwrap();
+    assert_eq!(d2.proxy_id, None);
+    assert_eq!(d2.updated_at, d.updated_at);
+  }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1687,6 +1961,17 @@ pub async fn update_profile_proxy(
     .update_profile_proxy(app_handle, &profile_id, proxy_id)
     .await
     .map_err(|e| format!("Failed to update profile: {e}"))
+}
+
+#[tauri::command]
+pub async fn assign_profiles_network(
+  profile_ids: Vec<String>,
+  proxy_id: Option<String>,
+  vpn_id: Option<String>,
+) -> Result<usize, String> {
+  ProfileManager::instance()
+    .assign_profiles_network(profile_ids, proxy_id, vpn_id)
+    .await
 }
 
 #[tauri::command]
@@ -1834,15 +2119,6 @@ pub async fn create_browser_profile_new(
   dns_blocklist: Option<String>,
   launch_hook: Option<String>,
 ) -> Result<BrowserProfile, String> {
-  let fingerprint_os = wayfern_config.as_ref().and_then(|c| c.os.as_deref());
-
-  if !crate::cloud_auth::CLOUD_AUTH
-    .is_fingerprint_os_allowed(fingerprint_os)
-    .await
-  {
-    return Err("Fingerprint OS spoofing requires an active Pro subscription".to_string());
-  }
-
   // A dead/unreachable proxy or VPN (or a 402 from an expired proxy
   // subscription) cancels creation with a translatable error.
   crate::validate_profile_network(proxy_id.as_deref(), vpn_id.as_deref()).await?;
@@ -1872,21 +2148,6 @@ pub async fn update_wayfern_config(
   profile_id: String,
   config: WayfernConfig,
 ) -> Result<(), String> {
-  if config.fingerprint.is_some()
-    && !crate::cloud_auth::CLOUD_AUTH
-      .can_use_cross_os_fingerprints()
-      .await
-  {
-    return Err(serde_json::json!({ "code": "FINGERPRINT_REQUIRES_PRO" }).to_string());
-  }
-
-  if !crate::cloud_auth::CLOUD_AUTH
-    .is_fingerprint_os_allowed(config.os.as_deref())
-    .await
-  {
-    return Err("Fingerprint OS spoofing requires an active Pro subscription".to_string());
-  }
-
   let profile_manager = ProfileManager::instance();
   profile_manager
     .update_wayfern_config(app_handle, &profile_id, config)
@@ -1895,10 +2156,16 @@ pub async fn update_wayfern_config(
 }
 
 #[tauri::command]
-pub fn clone_profile(profile_id: String, name: Option<String>) -> Result<BrowserProfile, String> {
-  ProfileManager::instance()
+pub async fn clone_profile(
+  app_handle: tauri::AppHandle,
+  profile_id: String,
+  name: Option<String>,
+) -> Result<BrowserProfile, String> {
+  let mut profile = ProfileManager::instance()
     .clone_profile(&profile_id, name)
-    .map_err(|e| format!("Failed to clone profile: {e}"))
+    .map_err(|e| format!("Failed to clone profile: {e}"))?;
+  crate::sync::apply_default_profile_sync_mode(&app_handle, &mut profile).await;
+  Ok(profile)
 }
 
 #[tauri::command]

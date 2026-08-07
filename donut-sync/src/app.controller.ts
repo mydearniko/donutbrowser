@@ -20,14 +20,26 @@ export class AppController {
   }
 
   @Get("readyz")
-  async getReadiness(): Promise<{ status: string; s3: boolean }> {
-    const s3Ready = await this.syncService.checkS3Connectivity();
-    if (!s3Ready) {
+  async getReadiness(): Promise<{
+    status: string;
+    storage: boolean;
+    driver: "local" | "s3";
+  }> {
+    const storageReady = await this.syncService.checkStorageConnectivity();
+    if (!storageReady) {
       throw new HttpException(
-        { status: "not ready", s3: false },
+        {
+          status: "not ready",
+          storage: false,
+          driver: this.syncService.getStorageDriver(),
+        },
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
-    return { status: "ready", s3: true };
+    return {
+      status: "ready",
+      storage: true,
+      driver: this.syncService.getStorageDriver(),
+    };
   }
 }

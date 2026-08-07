@@ -165,7 +165,6 @@
       "passwordSaved": "Đã thiết lập mật khẩu mã hóa",
       "passwordMismatch": "Mật khẩu không khớp",
       "passwordTooShort": "Mật khẩu phải có ít nhất 8 ký tự",
-      "requiresProOrOwner": "Mã hóa hồ sơ chỉ dành cho người dùng Pro và chủ nhóm.",
       "validatePassword": "Xác thực",
       "validateDialog": {
         "title": "Xác thực mật khẩu mã hóa",
@@ -173,7 +172,8 @@
         "submit": "Xác thực",
         "matchToast": "Mật khẩu chính xác",
         "mismatchToast": "Mật khẩu không khớp"
-      }
+      },
+      "teamOwnerRequired": "Chỉ chủ sở hữu nhóm mới có thể quản lý mã hóa hồ sơ."
     },
     "commercial": {
       "title": "Giấy phép thương mại",
@@ -270,7 +270,6 @@
       "stopLeader": "Dừng hồ sơ này và tất cả hồ sơ đi theo",
       "stopFollower": "Đang đi theo hành động của {{leaderName}}",
       "desyncedTooltip": "Đồng bộ thất bại tại {{url}}",
-      "paidFeature": "Trình đồng bộ là tính năng trả phí",
       "wayfernOnly": "Chỉ hồ sơ Wayfern mới có thể đồng bộ",
       "selectFollowers": "Chọn hồ sơ đi theo",
       "selectFollowersDesc": "Chọn các hồ sơ sẽ phản chiếu hành động của hồ sơ dẫn đầu. Chỉ hồ sơ Wayfern đã dừng mới có thể chọn.",
@@ -307,8 +306,7 @@
       "assignExtensionGroup": "Gán nhóm tiện ích",
       "copyCookies": "Sao chép Cookie",
       "runSelected": "Chạy mục đã chọn",
-      "stopSelected": "Dừng mục đã chọn",
-      "proRequired": "Cần gói Pro để chạy/dừng hàng loạt"
+      "stopSelected": "Dừng mục đã chọn"
     },
     "passwordProtectedBadge": "Được bảo vệ bằng mật khẩu",
     "launchHook": {
@@ -381,7 +379,8 @@
       "description": "Mã hóa dữ liệu hồ sơ trên ổ đĩa. Yêu cầu mật khẩu để khởi chạy."
     },
     "downloadingSubtitle": "Đang tải xuống…",
-    "browsersDownloading": "Trình duyệt vẫn đang được tải xuống. Việc tạo hồ sơ sẽ khả dụng khi quá trình tải hoàn tất."
+    "browsersDownloading": "Trình duyệt vẫn đang được tải xuống. Việc tạo hồ sơ sẽ khả dụng khi quá trình tải hoàn tất.",
+    "moreOptions": "Tùy chọn khác"
   },
   "deleteDialog": {
     "title": "Xóa hồ sơ",
@@ -406,8 +405,10 @@
       "disableSync": "Tắt đồng bộ",
       "editProxy": "Chỉnh sửa proxy",
       "deleteProxy": "Xóa proxy",
-      "cannotDelete_one": "Không thể xóa: đang được {{count}} hồ sơ sử dụng",
-      "cannotDelete_other": "Không thể xóa: đang được {{count}} hồ sơ sử dụng",
+      "deleteUnlinks_one": "Xóa và chuyển {{count}} hồ sơ sang kết nối trực tiếp",
+      "deleteUnlinks_other": "Xóa và chuyển {{count}} hồ sơ sang kết nối trực tiếp",
+      "deleteDescriptionWithUsage_one": "Hành động này không thể hoàn tác. Thao tác này sẽ xóa vĩnh viễn proxy \"{{name}}\" và chuyển {{count}} hồ sơ sang kết nối trực tiếp.",
+      "deleteDescriptionWithUsage_other": "Hành động này không thể hoàn tác. Thao tác này sẽ xóa vĩnh viễn proxy \"{{name}}\" và chuyển {{count}} hồ sơ sang kết nối trực tiếp.",
       "syncEnabled": "Đã bật đồng bộ",
       "syncDisabled": "Đã tắt đồng bộ",
       "updateSyncFailed": "Cập nhật đồng bộ thất bại",
@@ -419,7 +420,31 @@
       "newVpn": "VPN mới",
       "protocolCol": "Giao thức",
       "hostPort": "Máy chủ : cổng",
-      "title": "Proxy & VPN"
+      "title": "Proxy & VPN",
+      "searchPlaceholder": "Tìm theo tên, máy chủ, IP hoặc vị trí...",
+      "filterAll": "Mọi trạng thái",
+      "filterWorking": "Hoạt động",
+      "filterFailed": "Lỗi",
+      "filterUnchecked": "Chưa kiểm tra",
+      "filterUsed": "Đang dùng",
+      "filterUnused": "Chưa dùng",
+      "protocolAll": "Mọi giao thức",
+      "filteredCount": "{{shown}} trong {{total}} proxy",
+      "workingCount": "{{count}} hoạt động",
+      "failedCount": "{{count}} lỗi",
+      "uncheckedCount": "{{count}} chưa kiểm tra",
+      "usedCount": "{{count}} đang dùng",
+      "noMatches": "Không có proxy phù hợp với bộ lọc.",
+      "resultRange": "{{start}}–{{end}} trong {{total}}",
+      "rowsPerPage": "Số hàng mỗi trang",
+      "pageStatus": "Trang {{page}} / {{pages}}",
+      "previousPage": "Trang trước",
+      "nextPage": "Trang sau",
+      "bulkCheckResult": "Đã kiểm tra {{count}} proxy: {{working}} hoạt động, {{failed}} lỗi",
+      "checkSelected": "Kiểm tra proxy đã chọn",
+      "copySelected": "Sao chép URL proxy đã chọn",
+      "copiedSelected": "Đã sao chép {{count}} URL proxy",
+      "copyFailed": "Không thể sao chép URL proxy"
     },
     "add": "Thêm Proxy",
     "edit": "Chỉnh sửa Proxy",
@@ -846,8 +871,7 @@
       "selectFile": "Chọn tệp",
       "preview": "Tìm thấy {{count}} cookie",
       "success": "Đã nhập thành công {{imported}} cookie (đã thay thế {{replaced}})",
-      "error": "Nhập cookie thất bại",
-      "proFeature": "Nhập cookie là tính năng Pro"
+      "error": "Nhập cookie thất bại"
     },
     "export": {
       "title": "Xuất cookie",
@@ -1053,7 +1077,6 @@
     "productSub": "Phụ phẩm",
     "brand": "Thương hiệu",
     "brandVersion": "Phiên bản thương hiệu",
-    "proFeature": "Đây là tính năng Pro",
     "generateFingerprint": "Tạo vân tay",
     "refreshFingerprint": "Làm mới vân tay",
     "canvasNoiseSeedPlaceholder": "Nhập chuỗi hạt giống cho vân tay canvas",
@@ -1193,9 +1216,7 @@
       "cannotWhileRunning": "Dừng profile trước khi thay đổi mật khẩu."
     },
     "fingerprint": {
-      "notSupported": "Chỉnh sửa vân tay chỉ khả dụng cho profile Wayfern.",
-      "lockedTitle": "Xem và chỉnh sửa vân tay là tính năng Pro",
-      "lockedDescription": "Thông tin thiết bị của bạn được bảo vệ trong mọi profile. Việc xem và chỉnh sửa vân tay của profile yêu cầu gói trả phí đang hoạt động."
+      "notSupported": "Chỉnh sửa vân tay chỉ khả dụng cho profile Wayfern."
     },
     "syncStatusValue": {
       "waiting": "Đang chờ",
@@ -1212,7 +1233,6 @@
     "extensionsTab": "Tiện ích",
     "groupsTab": "Nhóm",
     "managedNotice": "Tiện ích được quản lý tại đây sẽ thay thế bất kỳ tiện ích nào được cài đặt thủ công trong profile khi khởi chạy.",
-    "proRequired": "Quản lý tiện ích là tính năng Pro",
     "empty": "Chưa tải lên tiện ích nào.",
     "noGroups": "Chưa tạo nhóm tiện ích nào.",
     "createGroup": "Tạo nhóm",
@@ -1270,14 +1290,6 @@
       "groupsDescription": "Xóa {{count}} nhóm tiện ích? {{names}}",
       "confirmButton": "Xóa"
     }
-  },
-  "pro": {
-    "badge": "PRO",
-    "fingerprintLocked": "Chỉnh sửa vân tay là tính năng Pro",
-    "cookieCopyLocked": "Sao chép cookie là tính năng Pro",
-    "cookieImportLocked": "Nhập cookie là tính năng Pro",
-    "cookieExportLocked": "Xuất cookie là tính năng Pro",
-    "cookieManagementLocked": "Quản lý cookie là tính năng Pro"
   },
   "dnsBlocklist": {
     "title": "Danh sách chặn DNS",
@@ -1457,7 +1469,8 @@
     "noneOption": "Không có",
     "noValidProfiles": "Chưa chọn profile hợp lệ nào.",
     "vpnGroupHeading": "VPN",
-    "failedFallback": "Gán proxy/VPN cho profile thất bại"
+    "failedFallback": "Gán proxy/VPN cho profile thất bại",
+    "limitedResults": "Đang hiển thị {{shown}} kết quả đầu tiên trong {{total}}. Hãy thu hẹp tìm kiếm."
   },
   "groupAssignment": {
     "title": "Gán nhóm",
@@ -1647,7 +1660,9 @@
     "tagsHeader": "Thẻ",
     "noteHeader": "Ghi chú",
     "vpnsHeading": "VPN",
-    "createByCountryHeading": "Tạo theo quốc gia"
+    "createByCountryHeading": "Tạo theo quốc gia",
+    "editAssignedProxy": "Sửa proxy đã gán: {{name}}",
+    "proxyPickerLimited": "Đang hiển thị {{shown}} kết quả đầu tiên trong {{total}}. Hãy thu hẹp tìm kiếm."
   },
   "dataTableActionBar": {
     "selected": "Đã chọn {{count}}",
@@ -1794,7 +1809,6 @@
     "cookieDbLocked": "Không thể đọc cookie — cơ sở dữ liệu bị khóa. Đóng trình duyệt và thử lại.",
     "cookieDbUnavailable": "Không thể đọc cookie — kho cookie không khả dụng.",
     "selfHostedRequiresLogout": "Đăng xuất khỏi tài khoản Donut trước khi cấu hình máy chủ tự lưu trữ.",
-    "fingerprintRequiresPro": "Xem hoặc chỉnh sửa vân tay yêu cầu gói trả phí đang hoạt động. Tính năng bảo vệ được bao gồm trong mọi gói.",
     "proxyNotWorking": "Proxy đã chọn không hoạt động, nên profile chưa được tạo.",
     "proxyPaymentRequired": "Proxy đã chọn yêu cầu thanh toán (402) — gói đăng ký của nó có thể đã hết hạn — nên profile chưa được tạo.",
     "vpnNotWorking": "VPN đã chọn không hoạt động, nên profile chưa được tạo.",
@@ -1802,7 +1816,11 @@
     "updateChecksumsUnavailable": "Không thể xác minh bản cập nhật {{version}} vì không thể tải tệp checksum. Bản cập nhật chưa được cài đặt; sẽ thử lại sau.",
     "updateChecksumMismatch": "Tệp cập nhật đã tải xuống {{file}} không vượt qua kiểm tra checksum và đã bị loại bỏ. Vui lòng thử lại.",
     "nameCannotBeEmpty": "Tên không được để trống",
-    "wayfernVersionNotAvailable": "Phiên bản Wayfern {{requested}} không có sẵn để tải xuống. Phiên bản hiện tại là {{current}}."
+    "wayfernVersionNotAvailable": "Phiên bản Wayfern {{requested}} không có sẵn để tải xuống. Phiên bản hiện tại là {{current}}.",
+    "syncDeviceIdInvalid": "ID thiết bị phải dài từ 3 đến 128 ký tự và chỉ dùng chữ cái, chữ số, dấu chấm, dấu gạch dưới hoặc dấu gạch ngang.",
+    "syncDeviceNameInvalid": "Tên thiết bị phải dài từ 1 đến 80 ký tự và không được chứa ký tự điều khiển.",
+    "syncDeviceIdBusy": "Hãy đóng tất cả hồ sơ đang đồng bộ và chờ quá trình truyền hoàn tất trước khi đổi ID thiết bị.",
+    "profileSyncPrepareFailed": "Không thể chuẩn bị hồ sơ này một cách an toàn từ dữ liệu đồng bộ. Hãy kiểm tra kết nối rồi thử lại."
   },
   "rail": {
     "profiles": "Profile",
@@ -1882,11 +1900,32 @@
       "connectionStatus": "Kết nối:",
       "statusUnknown": "Chưa kiểm tra",
       "testConnection": "Kiểm tra kết nối",
-      "disconnect": "Ngắt kết nối"
+      "disconnect": "Ngắt kết nối",
+      "syncDefaults": {
+        "title": "Mặc định đồng bộ hồ sơ",
+        "description": "Kiểm soát cách hồ sơ lâu dài tham gia đồng bộ thời gian thực.",
+        "newProfiles": "Đồng bộ thường cho hồ sơ mới",
+        "newProfilesDescription": "Tự động bật đồng bộ thường sau khi tạo, sao chép hoặc nhập hồ sơ.",
+        "enabledToast": "Đồng bộ thường hiện là mặc định",
+        "disabledToast": "Hồ sơ mới sẽ bắt đầu với đồng bộ bị tắt",
+        "everywhereDescription": "Bật đồng bộ thường cho mọi hồ sơ đủ điều kiện. Hồ sơ được mã hóa vẫn giữ mã hóa; hồ sơ đang chạy, tạm thời hoặc khác hệ điều hành sẽ được bỏ qua.",
+        "enableEverywhere": "Dùng đồng bộ thường ở mọi nơi",
+        "applySuccess": "Đã bật đồng bộ thường",
+        "applyPartial": "Một số hồ sơ chưa được cập nhật",
+        "applyResult": "Đã bật: {{enabled}}; đã bật sẵn: {{alreadyEnabled}}; bỏ qua: {{skipped}}; thất bại: {{failed}}.",
+        "requiresConnection": "Hãy lưu kết nối đồng bộ trước khi quản lý mặc định hồ sơ."
+      },
+      "deviceIdentity": {
+        "title": "Danh tính thiết bị",
+        "description": "Danh tính ổn định dùng cho sự kiện thời gian thực và khóa hồ sơ.",
+        "name": "Tên thiết bị",
+        "id": "ID thiết bị",
+        "changeHint": "Giữ một ID riêng cho mỗi bản cài đặt. Hãy đóng các hồ sơ đang đồng bộ và chờ mọi quá trình truyền hoàn tất trước khi thay đổi.",
+        "regenerate": "Tạo ID mới",
+        "saved": "Đã lưu danh tính thiết bị"
+      }
     },
-    "deviceOrdinal": "{{ordinal}} trên {{count}}",
-    "automationPrimaryOnly": "Tự động hóa trình duyệt chỉ chạy trên thiết bị chính của bạn (Thiết bị 1). Đăng xuất ở đó để sử dụng tại đây.",
-    "automationActiveHere": "Tự động hóa trình duyệt đang hoạt động trên thiết bị này."
+    "deviceOrdinal": "{{ordinal}} trên {{count}}"
   },
   "shortcutsPage": {
     "title": "Phím tắt",
@@ -2006,10 +2045,6 @@
       "commercialDesc": "Miễn phí dùng thử 2 tuần. Sau đó, gói trả phí giúp dự án được duy trì và phát triển."
     }
   },
-  "wayfernBlocked": {
-    "title": "Tự động hóa trình duyệt đã tạm dừng",
-    "description": "Tài khoản của bạn tạm thời bị hạn chế các tính năng Pro của trình duyệt, thường do đăng nhập trên nhiều thiết bị cùng lúc. Hãy đăng xuất khỏi các thiết bị khác rồi khởi chạy lại profile để khôi phục."
-  },
   "wayfernConfigDialog": {
     "titleView": "Xem cài đặt vân tay - {{name}} ({{browser}})",
     "titleConfigure": "Cấu hình cài đặt vân tay - {{name}} ({{browser}})",
@@ -2020,5 +2055,9 @@
   },
   "cookieCopy": {
     "noOtherTargets": "Chưa chọn profile Wayfern nào khác"
+  },
+  "wayfernTokenUnavailable": {
+    "title": "Không có mã thông báo Wayfern",
+    "description": "Không thể làm mới mã thông báo Wayfern được lưu trữ. Hồ sơ cục bộ và tính năng tự động hóa vẫn khả dụng, nhưng các tính năng dấu vân tay dựa trên mã thông báo có thể bị hạn chế."
   }
 }

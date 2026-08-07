@@ -165,7 +165,6 @@
       "passwordSaved": "加密密码已设置",
       "passwordMismatch": "密码不匹配",
       "passwordTooShort": "密码必须至少8个字符",
-      "requiresProOrOwner": "配置文件加密仅适用于Pro用户和团队所有者。",
       "validatePassword": "验证",
       "validateDialog": {
         "title": "验证加密密码",
@@ -173,7 +172,8 @@
         "submit": "验证",
         "matchToast": "密码正确",
         "mismatchToast": "密码不匹配"
-      }
+      },
+      "teamOwnerRequired": "只有团队所有者可以管理配置文件加密。"
     },
     "commercial": {
       "title": "商业许可",
@@ -270,7 +270,6 @@
       "stopLeader": "停止此配置文件及其所有跟随者",
       "stopFollower": "正在跟随 {{leaderName}} 的操作",
       "desyncedTooltip": "在 {{url}} 同步失败",
-      "paidFeature": "同步器是付费功能",
       "wayfernOnly": "只有 Wayfern 配置文件可以同步",
       "selectFollowers": "选择跟随者配置文件",
       "selectFollowersDesc": "选择将复制领导者配置文件操作的配置文件。只能选择已停止的 Wayfern 配置文件。",
@@ -307,8 +306,7 @@
       "assignExtensionGroup": "分配扩展分组",
       "copyCookies": "复制 Cookie",
       "runSelected": "运行所选",
-      "stopSelected": "停止所选",
-      "proRequired": "批量运行/停止需要 Pro 套餐"
+      "stopSelected": "停止所选"
     },
     "passwordProtectedBadge": "密码保护",
     "launchHook": {
@@ -381,7 +379,8 @@
       "description": "加密磁盘上的配置文件数据。启动时需要密码。"
     },
     "downloadingSubtitle": "正在下载…",
-    "browsersDownloading": "浏览器仍在下载中。下载完成后即可创建配置文件。"
+    "browsersDownloading": "浏览器仍在下载中。下载完成后即可创建配置文件。",
+    "moreOptions": "更多选项"
   },
   "deleteDialog": {
     "title": "删除配置文件",
@@ -406,8 +405,10 @@
       "disableSync": "禁用同步",
       "editProxy": "编辑代理",
       "deleteProxy": "删除代理",
-      "cannotDelete_one": "无法删除: 被 {{count}} 个配置文件使用",
-      "cannotDelete_other": "无法删除: 被 {{count}} 个配置文件使用",
+      "deleteUnlinks_one": "删除并将 {{count}} 个配置文件切换到直连",
+      "deleteUnlinks_other": "删除并将 {{count}} 个配置文件切换到直连",
+      "deleteDescriptionWithUsage_one": "此操作无法撤消。这将永久删除代理 \"{{name}}\" 并将 {{count}} 个配置文件切换到直连。",
+      "deleteDescriptionWithUsage_other": "此操作无法撤消。这将永久删除代理 \"{{name}}\" 并将 {{count}} 个配置文件切换到直连。",
       "syncEnabled": "已启用同步",
       "syncDisabled": "已禁用同步",
       "updateSyncFailed": "更新同步失败",
@@ -419,7 +420,31 @@
       "newVpn": "新建 VPN",
       "protocolCol": "协议",
       "hostPort": "主机 : 端口",
-      "title": "代理和 VPN"
+      "title": "代理和 VPN",
+      "searchPlaceholder": "按名称、主机、IP 或位置搜索...",
+      "filterAll": "所有状态",
+      "filterWorking": "可用",
+      "filterFailed": "失败",
+      "filterUnchecked": "未检查",
+      "filterUsed": "使用中",
+      "filterUnused": "未使用",
+      "protocolAll": "所有协议",
+      "filteredCount": "显示 {{shown}} / {{total}} 个代理",
+      "workingCount": "{{count}} 个可用",
+      "failedCount": "{{count}} 个失败",
+      "uncheckedCount": "{{count}} 个未检查",
+      "usedCount": "{{count}} 个使用中",
+      "noMatches": "没有符合筛选条件的代理。",
+      "resultRange": "{{start}}–{{end}} / {{total}}",
+      "rowsPerPage": "每页行数",
+      "pageStatus": "第 {{page}} / {{pages}} 页",
+      "previousPage": "上一页",
+      "nextPage": "下一页",
+      "bulkCheckResult": "已检查 {{count}} 个代理：{{working}} 个可用，{{failed}} 个失败",
+      "checkSelected": "检查所选代理",
+      "copySelected": "复制所选代理 URL",
+      "copiedSelected": "已复制 {{count}} 个代理 URL",
+      "copyFailed": "无法复制代理 URL"
     },
     "add": "添加代理",
     "edit": "编辑代理",
@@ -846,8 +871,7 @@
       "selectFile": "选择文件",
       "preview": "找到 {{count}} 个 Cookies",
       "success": "成功导入 {{imported}} 个 Cookies（替换了 {{replaced}} 个）",
-      "error": "导入 Cookies 失败",
-      "proFeature": "导入 Cookies 是 Pro 功能"
+      "error": "导入 Cookies 失败"
     },
     "export": {
       "title": "导出 Cookies",
@@ -1053,7 +1077,6 @@
     "productSub": "产品子版本",
     "brand": "品牌",
     "brandVersion": "品牌版本",
-    "proFeature": "这是 Pro 功能",
     "generateFingerprint": "生成指纹",
     "refreshFingerprint": "刷新指纹",
     "canvasNoiseSeedPlaceholder": "输入用于 canvas 指纹的种子字符串",
@@ -1193,9 +1216,7 @@
       "cannotWhileRunning": "更改密码前请先停止此配置文件。"
     },
     "fingerprint": {
-      "notSupported": "指纹编辑仅适用于 Wayfern 配置文件。",
-      "lockedTitle": "查看和编辑指纹是 Pro 功能",
-      "lockedDescription": "每个配置文件中都会保护你的设备信息。查看和编辑配置文件的指纹需要有效的付费方案。"
+      "notSupported": "指纹编辑仅适用于 Wayfern 配置文件。"
     },
     "syncStatusValue": {
       "waiting": "等待中",
@@ -1212,7 +1233,6 @@
     "extensionsTab": "扩展程序",
     "groupsTab": "分组",
     "managedNotice": "此处管理的扩展程序将在启动时替换配置文件中手动安装的所有扩展程序。",
-    "proRequired": "扩展程序管理是 Pro 功能",
     "empty": "尚未上传任何扩展程序。",
     "noGroups": "尚未创建任何扩展程序组。",
     "createGroup": "创建分组",
@@ -1270,14 +1290,6 @@
       "groupsDescription": "删除 {{count}} 个扩展组？{{names}}",
       "confirmButton": "删除"
     }
-  },
-  "pro": {
-    "badge": "PRO",
-    "fingerprintLocked": "指纹编辑是 Pro 功能",
-    "cookieCopyLocked": "Cookie 复制是 Pro 功能",
-    "cookieImportLocked": "Cookie 导入是 Pro 功能",
-    "cookieExportLocked": "Cookie 导出是 Pro 功能",
-    "cookieManagementLocked": "Cookie 管理是 Pro 功能"
   },
   "dnsBlocklist": {
     "title": "DNS 拦截列表",
@@ -1457,7 +1469,8 @@
     "noneOption": "无",
     "noValidProfiles": "未选择有效的配置文件。",
     "vpnGroupHeading": "VPN",
-    "failedFallback": "为配置文件分配代理/VPN 失败"
+    "failedFallback": "为配置文件分配代理/VPN 失败",
+    "limitedResults": "显示前 {{shown}} / {{total}} 个结果。请缩小搜索范围。"
   },
   "groupAssignment": {
     "title": "分配分组",
@@ -1647,7 +1660,9 @@
     "tagsHeader": "标签",
     "noteHeader": "备注",
     "vpnsHeading": "VPN",
-    "createByCountryHeading": "按国家创建"
+    "createByCountryHeading": "按国家创建",
+    "editAssignedProxy": "编辑已分配的代理：{{name}}",
+    "proxyPickerLimited": "显示前 {{shown}} / {{total}} 个结果。请缩小搜索范围。"
   },
   "dataTableActionBar": {
     "selected": "已选择 {{count}}",
@@ -1794,7 +1809,6 @@
     "cookieDbLocked": "无法读取 Cookie — 数据库已锁定。请关闭浏览器后重试。",
     "cookieDbUnavailable": "无法读取 Cookie — Cookie 存储不可用。",
     "selfHostedRequiresLogout": "在配置自托管服务器之前请先退出 Donut 账户。",
-    "fingerprintRequiresPro": "查看或编辑指纹需要有效的付费方案。所有方案均包含指纹保护。",
     "proxyNotWorking": "所选代理无法使用，因此未创建配置文件。",
     "proxyPaymentRequired": "所选代理需要付费（402），其订阅可能已过期，因此未创建配置文件。",
     "vpnNotWorking": "所选 VPN 无法使用，因此未创建配置文件。",
@@ -1802,7 +1816,11 @@
     "updateChecksumsUnavailable": "无法验证更新 {{version}}：无法获取其校验和文件。更新未安装，稍后将重试。",
     "updateChecksumMismatch": "下载的更新文件 {{file}} 未通过校验和验证，已被丢弃。请重试。",
     "nameCannotBeEmpty": "名称不能为空",
-    "wayfernVersionNotAvailable": "Wayfern 版本 {{requested}} 无法下载。当前版本为 {{current}}。"
+    "wayfernVersionNotAvailable": "Wayfern 版本 {{requested}} 无法下载。当前版本为 {{current}}。",
+    "syncDeviceIdInvalid": "设备 ID 必须为 3–128 个字符，且只能使用字母、数字、点、下划线或连字符。",
+    "syncDeviceNameInvalid": "设备名称必须为 1–80 个字符，且不能包含控制字符。",
+    "syncDeviceIdBusy": "更改设备 ID 前，请关闭所有已同步的配置文件并等待当前同步传输完成。",
+    "profileSyncPrepareFailed": "无法安全地从同步数据准备此配置文件。请检查网络连接后重试。"
   },
   "rail": {
     "profiles": "配置文件",
@@ -1882,11 +1900,32 @@
       "connectionStatus": "连接：",
       "statusUnknown": "未测试",
       "testConnection": "测试连接",
-      "disconnect": "断开连接"
+      "disconnect": "断开连接",
+      "syncDefaults": {
+        "title": "配置文件同步默认值",
+        "description": "控制持久配置文件如何加入实时同步。",
+        "newProfiles": "新配置文件使用常规同步",
+        "newProfilesDescription": "创建、克隆或导入配置文件后自动启用常规同步。",
+        "enabledToast": "常规同步现已设为默认值",
+        "disabledToast": "新配置文件将以禁用同步的状态创建",
+        "everywhereDescription": "为所有符合条件的配置文件启用常规同步。加密配置文件保持加密；正在运行、临时或其他操作系统的配置文件将被跳过。",
+        "enableEverywhere": "在所有配置文件中使用常规同步",
+        "applySuccess": "已启用常规同步",
+        "applyPartial": "部分配置文件未更新",
+        "applyResult": "已启用：{{enabled}}；已启用：{{alreadyEnabled}}；已跳过：{{skipped}}；失败：{{failed}}。",
+        "requiresConnection": "请先保存同步连接，再管理配置文件默认值。"
+      },
+      "deviceIdentity": {
+        "title": "设备身份",
+        "description": "用于实时事件和配置文件锁定的稳定身份。",
+        "name": "设备名称",
+        "id": "设备 ID",
+        "changeHint": "每个安装实例应使用唯一 ID。更改前请关闭已同步的配置文件，并等待当前传输完成。",
+        "regenerate": "生成新 ID",
+        "saved": "设备身份已保存"
+      }
     },
-    "deviceOrdinal": "第 {{ordinal}} 台，共 {{count}} 台",
-    "automationPrimaryOnly": "浏览器自动化仅在您的主设备（设备 1）上运行。请在该设备上退出登录，才能在此设备上使用。",
-    "automationActiveHere": "浏览器自动化已在此设备上启用。"
+    "deviceOrdinal": "第 {{ordinal}} 台，共 {{count}} 台"
   },
   "shortcutsPage": {
     "title": "键盘快捷键",
@@ -2006,10 +2045,6 @@
       "commercialDesc": "在 2 周评估期内免费。之后需要付费方案，这有助于本项目的持续维护与发展。"
     }
   },
-  "wayfernBlocked": {
-    "title": "浏览器自动化已暂停",
-    "description": "您的账户暂时被限制使用 Pro 浏览器功能，通常是因为同时在多台设备上登录。请退出其他设备的登录，然后重新启动配置文件即可恢复。"
-  },
   "wayfernConfigDialog": {
     "titleView": "查看指纹设置 - {{name}} ({{browser}})",
     "titleConfigure": "配置指纹设置 - {{name}} ({{browser}})",
@@ -2020,5 +2055,9 @@
   },
   "cookieCopy": {
     "noOtherTargets": "未选择其他 Wayfern 配置文件"
+  },
+  "wayfernTokenUnavailable": {
+    "title": "Wayfern令牌不可用",
+    "description": "无法刷新托管的Wayfern令牌。本地配置文件和自动化仍然可用，但依赖令牌的指纹功能可能会受到限制。"
   }
 }

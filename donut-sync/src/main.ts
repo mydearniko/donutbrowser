@@ -1,6 +1,7 @@
 import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { AppModule } from "./app.module.js";
+import { configureHttp } from "./http-config.js";
 
 const INSECURE_DEFAULT_TOKENS = new Set([
   "secret-sync-token",
@@ -28,15 +29,15 @@ function validateEnv() {
 async function bootstrap() {
   validateEnv();
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
-
-  // biome-ignore lint/correctness/useHookAtTopLevel: NestJS method, not a React hook
-  app.useBodyParser("json", { limit: "50mb" });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bodyParser: false,
+  });
+  configureHttp(app);
 
   app.enableCors({
     origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Donut-Sync-Client"],
   });
 
   const port = process.env.PORT ?? 3929;

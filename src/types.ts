@@ -76,6 +76,9 @@ export type SyncStatus = "Disabled" | "Syncing" | "Synced" | "Error";
 export interface SyncSettings {
   sync_server_url?: string;
   sync_token?: string;
+  default_profile_sync_mode: SyncMode;
+  sync_device_id: string;
+  sync_device_name: string;
 }
 
 /**
@@ -127,6 +130,7 @@ export interface ProfileLockInfo {
   lockedByEmail: string;
   lockedAt: string;
   expiresAt?: string;
+  ownedByCurrent: boolean;
 }
 
 export interface CloudAuthState {
@@ -146,6 +150,12 @@ export interface ProxyCheckResult {
   country_code?: string;
   timestamp: number;
   is_valid: boolean;
+}
+
+export interface ProxyManagementSnapshot {
+  cached_checks: Record<string, ProxyCheckResult>;
+  usage: Record<string, number>;
+  synced_in_use: string[];
 }
 
 export function isSyncEnabled(profile: BrowserProfile): boolean {
@@ -242,6 +252,8 @@ export interface WayfernConfig {
   randomize_fingerprint_on_launch?: boolean; // Generate new fingerprint on every launch
   os?: WayfernOS; // Operating system for fingerprint generation
   geo_proxy_signature?: string; // Internal: routing the fingerprint's location was computed for
+  prepared_fingerprint?: string; // Internal: next randomized fingerprint prepared off the launch path
+  prepared_fingerprint_signature?: string;
 }
 
 // Wayfern fingerprint config - matches the C++ FingerprintData structure

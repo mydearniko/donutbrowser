@@ -9,6 +9,8 @@ use aes_gcm::{
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
 use rand::RngExt;
 
+use crate::profile::types::SyncMode;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TableSortingSettings {
   pub column: String,    // Column to sort by: "name", "browser", "status"
@@ -41,6 +43,12 @@ pub struct AppSettings {
   #[serde(default)]
   pub sync_server_url: Option<String>, // URL of the sync server
   #[serde(default)]
+  pub default_profile_sync_mode: SyncMode,
+  #[serde(default)]
+  pub sync_device_id: Option<String>,
+  #[serde(default)]
+  pub sync_device_name: Option<String>,
+  #[serde(default)]
   pub first_launch_timestamp: Option<u64>, // Unix epoch seconds when app was first launched
   #[serde(default)]
   pub commercial_trial_acknowledged: bool, // Has user dismissed the trial expiration modal
@@ -69,6 +77,15 @@ pub struct AppSettings {
 pub struct SyncSettings {
   pub sync_server_url: Option<String>,
   pub sync_token: Option<String>, // Only populated when reading, not stored in JSON
+  pub default_profile_sync_mode: SyncMode,
+  pub sync_device_id: String,
+  pub sync_device_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SyncDeviceIdentity {
+  pub device_id: String,
+  pub device_name: String,
 }
 
 fn default_theme() -> String {
@@ -77,6 +94,18 @@ fn default_theme() -> String {
 
 fn default_api_port() -> u16 {
   10108
+}
+
+fn is_valid_sync_device_id(value: &str) -> bool {
+  (3..=128).contains(&value.len())
+    && value
+      .bytes()
+      .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn is_valid_sync_device_name(value: &str) -> bool {
+  let length = value.chars().count();
+  (1..=80).contains(&length) && !value.chars().any(char::is_control)
 }
 
 impl Default for AppSettings {
@@ -89,6 +118,9 @@ impl Default for AppSettings {
       api_port: 10108,
       api_token: None,
       sync_server_url: None,
+      default_profile_sync_mode: SyncMode::Disabled,
+      sync_device_id: None,
+      sync_device_name: None,
       first_launch_timestamp: None,
       commercial_trial_acknowledged: false,
       mcp_enabled: false,
@@ -587,6 +619,9 @@ impl SettingsManager {
 
     std::fs::write(&token_file, file_data)?;
     crate::app_dirs::restrict_to_owner(std::path::Path::new(&token_file));
+    if let Ok(mut cached) = SYNC_TOKEN_CACHE.write() {
+      *cached = Some(token.to_string());
+    }
     Ok(())
   }
 
@@ -594,6 +629,16 @@ impl SettingsManager {
     &self,
     _app_handle: &tauri::AppHandle,
   ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    self.load_sync_token()
+  }
+
+  pub fn load_sync_token(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if let Ok(cached) = SYNC_TOKEN_CACHE.read() {
+      if let Some(token) = cached.as_ref() {
+        return Ok(Some(token.clone()));
+      }
+    }
+
     let token_file = self.get_settings_dir().join("sync_token.dat");
 
     if !token_file.exists() {
@@ -668,7 +713,12 @@ impl SettingsManager {
       .map_err(|_| "Decryption failed")?;
 
     match String::from_utf8(plaintext) {
-      Ok(token) => Ok(Some(token)),
+      Ok(token) => {
+        if let Ok(mut cached) = SYNC_TOKEN_CACHE.write() {
+          *cached = Some(token.clone());
+        }
+        Ok(Some(token))
+      }
       Err(_) => Ok(None),
     }
   }
@@ -682,16 +732,104 @@ impl SettingsManager {
     if token_file.exists() {
       std::fs::remove_file(token_file)?;
     }
+    if let Ok(mut cached) = SYNC_TOKEN_CACHE.write() {
+      *cached = None;
+    }
 
     Ok(())
   }
 
   pub fn get_sync_settings(&self) -> Result<SyncSettings, Box<dyn std::error::Error>> {
     let settings = self.load_settings()?;
+    let identity = self.get_or_create_sync_device_identity()?;
     Ok(SyncSettings {
       sync_server_url: settings.sync_server_url,
       sync_token: None, // Token needs to be loaded separately via async method
+      default_profile_sync_mode: settings.default_profile_sync_mode,
+      sync_device_id: identity.device_id,
+      sync_device_name: identity.device_name,
     })
+  }
+
+  pub fn get_or_create_sync_device_identity(
+    &self,
+  ) -> Result<SyncDeviceIdentity, Box<dyn std::error::Error>> {
+    let _identity_guard = SYNC_DEVICE_IDENTITY_MUTEX
+      .lock()
+      .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut settings = self.load_settings()?;
+    let mut changed = false;
+
+    let device_id = settings
+      .sync_device_id
+      .as_deref()
+      .map(str::trim)
+      .filter(|value| is_valid_sync_device_id(value))
+      .map(str::to_string)
+      .unwrap_or_else(|| {
+        changed = true;
+        uuid::Uuid::new_v4().to_string()
+      });
+
+    let device_name = settings
+      .sync_device_name
+      .as_deref()
+      .map(str::trim)
+      .filter(|value| is_valid_sync_device_name(value))
+      .map(str::to_string)
+      .unwrap_or_else(|| {
+        changed = true;
+        sysinfo::System::host_name()
+          .map(|name| name.trim().to_string())
+          .filter(|name| is_valid_sync_device_name(name))
+          .unwrap_or_else(|| format!("Device {}", device_id.chars().take(8).collect::<String>()))
+      });
+
+    if settings.sync_device_id.as_deref() != Some(device_id.as_str())
+      || settings.sync_device_name.as_deref() != Some(device_name.as_str())
+    {
+      changed = true;
+    }
+
+    if changed {
+      settings.sync_device_id = Some(device_id.clone());
+      settings.sync_device_name = Some(device_name.clone());
+      self.save_settings(&settings)?;
+    }
+
+    Ok(SyncDeviceIdentity {
+      device_id,
+      device_name,
+    })
+  }
+
+  pub fn save_sync_device_identity(
+    &self,
+    identity: &SyncDeviceIdentity,
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let _identity_guard = SYNC_DEVICE_IDENTITY_MUTEX
+      .lock()
+      .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut settings = self.load_settings()?;
+    settings.sync_device_id = Some(identity.device_id.clone());
+    settings.sync_device_name = Some(identity.device_name.clone());
+    self.save_settings(&settings)
+  }
+
+  pub fn default_profile_sync_mode(&self) -> SyncMode {
+    self
+      .load_settings()
+      .map(|settings| settings.default_profile_sync_mode)
+      .unwrap_or_default()
+  }
+
+  pub fn save_default_profile_sync_mode(
+    &self,
+    mode: SyncMode,
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut settings = self.load_settings()?;
+    settings.default_profile_sync_mode = mode;
+    self.save_settings(&settings)
   }
 
   pub fn save_sync_server_url(
@@ -938,6 +1076,17 @@ pub async fn save_table_sorting_settings(sorting: TableSortingSettings) -> Resul
 
 #[tauri::command]
 pub async fn get_sync_settings(app_handle: tauri::AppHandle) -> Result<SyncSettings, String> {
+  let manager = SettingsManager::instance();
+  let identity = manager
+    .get_or_create_sync_device_identity()
+    .map_err(|error| {
+      serde_json::json!({
+        "code": "INTERNAL_ERROR",
+        "params": { "detail": error.to_string() }
+      })
+      .to_string()
+    })?;
+
   // Cloud auth takes priority over self-hosted settings
   if crate::cloud_auth::CLOUD_AUTH.is_logged_in().await {
     let sync_token = crate::cloud_auth::CLOUD_AUTH
@@ -947,11 +1096,13 @@ pub async fn get_sync_settings(app_handle: tauri::AppHandle) -> Result<SyncSetti
     return Ok(SyncSettings {
       sync_server_url: Some(crate::cloud_auth::CLOUD_SYNC_URL.to_string()),
       sync_token,
+      default_profile_sync_mode: SettingsManager::instance().default_profile_sync_mode(),
+      sync_device_id: identity.device_id,
+      sync_device_name: identity.device_name,
     });
   }
 
   // Fall back to self-hosted settings
-  let manager = SettingsManager::instance();
   let mut sync_settings = manager
     .get_sync_settings()
     .map_err(|e| format!("Failed to load sync settings: {e}"))?;
@@ -999,10 +1150,110 @@ pub async fn save_sync_settings(
       .map_err(|e| format!("Failed to remove sync token: {e}"))?;
   }
 
+  if sync_server_url.is_none() && sync_token.is_none() {
+    manager
+      .save_default_profile_sync_mode(SyncMode::Disabled)
+      .map_err(|error| {
+        serde_json::json!({
+          "code": "INTERNAL_ERROR",
+          "params": { "detail": error.to_string() }
+        })
+        .to_string()
+      })?;
+  }
+
+  let identity = manager
+    .get_or_create_sync_device_identity()
+    .map_err(|error| {
+      serde_json::json!({
+        "code": "INTERNAL_ERROR",
+        "params": { "detail": error.to_string() }
+      })
+      .to_string()
+    })?;
+
   Ok(SyncSettings {
     sync_server_url,
     sync_token,
+    default_profile_sync_mode: manager.default_profile_sync_mode(),
+    sync_device_id: identity.device_id,
+    sync_device_name: identity.device_name,
   })
+}
+
+#[tauri::command]
+pub async fn save_sync_device_identity(
+  device_id: String,
+  device_name: String,
+) -> Result<SyncDeviceIdentity, String> {
+  let identity = SyncDeviceIdentity {
+    device_id: device_id.trim().to_string(),
+    device_name: device_name.trim().to_string(),
+  };
+  if !is_valid_sync_device_id(&identity.device_id) {
+    return Err(serde_json::json!({ "code": "SYNC_DEVICE_ID_INVALID" }).to_string());
+  }
+  if !is_valid_sync_device_name(&identity.device_name) {
+    return Err(serde_json::json!({ "code": "SYNC_DEVICE_NAME_INVALID" }).to_string());
+  }
+
+  let manager = SettingsManager::instance();
+  let current = manager
+    .get_or_create_sync_device_identity()
+    .map_err(|error| {
+      serde_json::json!({
+        "code": "INTERNAL_ERROR",
+        "params": { "detail": error.to_string() }
+      })
+      .to_string()
+    })?;
+
+  if current.device_id != identity.device_id {
+    let has_running_synced_profile = crate::profile::ProfileManager::instance()
+      .list_profiles()
+      .map_err(|error| {
+        serde_json::json!({
+          "code": "INTERNAL_ERROR",
+          "params": { "detail": error.to_string() }
+        })
+        .to_string()
+      })?
+      .iter()
+      .any(|profile| profile.is_sync_enabled() && profile.process_id.is_some());
+    let sync_in_progress = if let Some(scheduler) = crate::sync::get_global_scheduler() {
+      scheduler.is_sync_in_progress().await
+    } else {
+      false
+    };
+    if has_running_synced_profile || sync_in_progress {
+      return Err(serde_json::json!({ "code": "SYNC_DEVICE_ID_BUSY" }).to_string());
+    }
+
+    crate::team_lock::PROFILE_LOCK
+      .release_all_owned_locks()
+      .await
+      .map_err(|error| {
+        serde_json::json!({
+          "code": "INTERNAL_ERROR",
+          "params": { "detail": error }
+        })
+        .to_string()
+      })?;
+  }
+
+  crate::team_lock::PROFILE_LOCK.disconnect().await;
+  manager
+    .save_sync_device_identity(&identity)
+    .map_err(|error| {
+      serde_json::json!({
+        "code": "INTERNAL_ERROR",
+        "params": { "detail": error.to_string() }
+      })
+      .to_string()
+    })?;
+  crate::team_lock::PROFILE_LOCK.connect().await;
+
+  Ok(identity)
 }
 
 #[tauri::command]
@@ -1100,6 +1351,9 @@ pub fn get_system_info() -> SystemInfo {
 // Global singleton instance
 lazy_static::lazy_static! {
   static ref SETTINGS_MANAGER: SettingsManager = SettingsManager::new();
+  static ref SYNC_DEVICE_IDENTITY_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+  static ref SYNC_TOKEN_CACHE: std::sync::RwLock<Option<String>> =
+    std::sync::RwLock::new(None);
 }
 
 #[cfg(test)]
@@ -1130,6 +1384,11 @@ mod tests {
     assert_eq!(
       default_settings.theme, "system",
       "Default theme should be system"
+    );
+    assert_eq!(
+      default_settings.default_profile_sync_mode,
+      SyncMode::Disabled,
+      "Profile sync should remain opt-in for existing installations"
     );
   }
 
@@ -1177,6 +1436,9 @@ mod tests {
       api_port: 10108,
       api_token: None,
       sync_server_url: None,
+      default_profile_sync_mode: SyncMode::Disabled,
+      sync_device_id: None,
+      sync_device_name: None,
       first_launch_timestamp: None,
       commercial_trial_acknowledged: false,
       mcp_enabled: false,
@@ -1204,6 +1466,62 @@ mod tests {
       loaded_settings.theme, "dark",
       "Loaded theme should match saved"
     );
+    assert_eq!(
+      loaded_settings.default_profile_sync_mode,
+      SyncMode::Disabled
+    );
+  }
+
+  #[test]
+  fn test_save_default_profile_sync_mode() {
+    let (manager, _temp_dir, _guard) = create_test_settings_manager();
+
+    manager
+      .save_default_profile_sync_mode(SyncMode::Regular)
+      .expect("regular sync default should save");
+
+    assert_eq!(manager.default_profile_sync_mode(), SyncMode::Regular);
+  }
+
+  #[test]
+  fn test_sync_device_identity_is_persistent_and_configurable() {
+    let (manager, _temp_dir, _guard) = create_test_settings_manager();
+
+    let generated = manager
+      .get_or_create_sync_device_identity()
+      .expect("device identity should be generated");
+    assert!(is_valid_sync_device_id(&generated.device_id));
+    assert!(is_valid_sync_device_name(&generated.device_name));
+    assert_eq!(
+      manager
+        .get_or_create_sync_device_identity()
+        .expect("device identity should reload"),
+      generated
+    );
+
+    let configured = SyncDeviceIdentity {
+      device_id: "workstation.eu-2".to_string(),
+      device_name: "EU Workstation".to_string(),
+    };
+    manager
+      .save_sync_device_identity(&configured)
+      .expect("device identity should save");
+    assert_eq!(
+      manager
+        .get_or_create_sync_device_identity()
+        .expect("configured identity should reload"),
+      configured
+    );
+  }
+
+  #[test]
+  fn test_sync_device_identity_validation() {
+    assert!(is_valid_sync_device_id("device-1.eu"));
+    assert!(!is_valid_sync_device_id("x"));
+    assert!(!is_valid_sync_device_id("device id"));
+    assert!(is_valid_sync_device_name("My workstation"));
+    assert!(!is_valid_sync_device_name(""));
+    assert!(!is_valid_sync_device_name("bad\nname"));
   }
 
   #[test]

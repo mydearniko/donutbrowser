@@ -165,7 +165,6 @@
       "passwordSaved": "Encryption password set",
       "passwordMismatch": "Passwords do not match",
       "passwordTooShort": "Password must be at least 8 characters",
-      "requiresProOrOwner": "Profile encryption is available for Pro users and team owners.",
       "validatePassword": "Validate",
       "validateDialog": {
         "title": "Validate Encryption Password",
@@ -173,7 +172,8 @@
         "submit": "Validate",
         "matchToast": "Password is correct",
         "mismatchToast": "Password does not match"
-      }
+      },
+      "teamOwnerRequired": "Only the team owner can manage profile encryption."
     },
     "commercial": {
       "title": "Commercial License",
@@ -270,7 +270,6 @@
       "stopLeader": "Stop this profile and all its followers",
       "stopFollower": "Following actions of {{leaderName}}",
       "desyncedTooltip": "Synchronization failed at {{url}}",
-      "paidFeature": "Synchronizer is a paid feature",
       "wayfernOnly": "Only Wayfern profiles can be synchronized",
       "selectFollowers": "Select Follower Profiles",
       "selectFollowersDesc": "Choose profiles that will mirror the actions of the leader profile. Only stopped Wayfern profiles can be selected.",
@@ -307,8 +306,7 @@
       "assignExtensionGroup": "Assign Extension Group",
       "copyCookies": "Copy Cookies",
       "runSelected": "Run selected",
-      "stopSelected": "Stop selected",
-      "proRequired": "Pro plan required for bulk run/stop"
+      "stopSelected": "Stop selected"
     },
     "passwordProtectedBadge": "Password Protected",
     "launchHook": {
@@ -381,7 +379,8 @@
       "description": "Encrypts the on-disk profile data. Required to launch."
     },
     "downloadingSubtitle": "Downloading…",
-    "browsersDownloading": "Browsers are still downloading. Profile creation will be available once a download finishes."
+    "browsersDownloading": "Browsers are still downloading. Profile creation will be available once a download finishes.",
+    "moreOptions": "More options"
   },
   "deleteDialog": {
     "title": "Delete Profile",
@@ -406,8 +405,10 @@
       "disableSync": "Disable sync",
       "editProxy": "Edit proxy",
       "deleteProxy": "Delete proxy",
-      "cannotDelete_one": "Cannot delete: in use by {{count}} profile",
-      "cannotDelete_other": "Cannot delete: in use by {{count}} profiles",
+      "deleteUnlinks_one": "Delete and switch {{count}} profile to Direct",
+      "deleteUnlinks_other": "Delete and switch {{count}} profiles to Direct",
+      "deleteDescriptionWithUsage_one": "This action cannot be undone. This will permanently delete the proxy \"{{name}}\" and switch {{count}} profile to Direct.",
+      "deleteDescriptionWithUsage_other": "This action cannot be undone. This will permanently delete the proxy \"{{name}}\" and switch {{count}} profiles to Direct.",
       "syncEnabled": "Sync enabled",
       "syncDisabled": "Sync disabled",
       "updateSyncFailed": "Failed to update sync",
@@ -419,7 +420,31 @@
       "newVpn": "New VPN",
       "protocolCol": "Protocol",
       "hostPort": "Host : port",
-      "title": "Proxies & VPNs"
+      "title": "Proxies & VPNs",
+      "searchPlaceholder": "Search name, host, IP, or location...",
+      "filterAll": "All statuses",
+      "filterWorking": "Working",
+      "filterFailed": "Failed",
+      "filterUnchecked": "Unchecked",
+      "filterUsed": "In use",
+      "filterUnused": "Unused",
+      "protocolAll": "All protocols",
+      "filteredCount": "{{shown}} of {{total}} proxies",
+      "workingCount": "{{count}} working",
+      "failedCount": "{{count}} failed",
+      "uncheckedCount": "{{count}} unchecked",
+      "usedCount": "{{count}} in use",
+      "noMatches": "No proxies match these filters.",
+      "resultRange": "{{start}}–{{end}} of {{total}}",
+      "rowsPerPage": "Rows per page",
+      "pageStatus": "Page {{page}} of {{pages}}",
+      "previousPage": "Previous page",
+      "nextPage": "Next page",
+      "bulkCheckResult": "Checked {{count}} proxies: {{working}} working, {{failed}} failed",
+      "checkSelected": "Check selected proxies",
+      "copySelected": "Copy selected proxy URLs",
+      "copiedSelected": "Copied {{count}} proxy URLs",
+      "copyFailed": "Failed to copy proxy URLs"
     },
     "add": "Add Proxy",
     "edit": "Edit Proxy",
@@ -846,8 +871,7 @@
       "selectFile": "Choose File",
       "preview": "{{count}} cookies found",
       "success": "Successfully imported {{imported}} cookies ({{replaced}} replaced)",
-      "error": "Failed to import cookies",
-      "proFeature": "Cookie import is a Pro feature"
+      "error": "Failed to import cookies"
     },
     "export": {
       "title": "Export Cookies",
@@ -1053,7 +1077,6 @@
     "productSub": "Product Sub",
     "brand": "Brand",
     "brandVersion": "Brand Version",
-    "proFeature": "This is a Pro feature",
     "generateFingerprint": "Generate Fingerprint",
     "refreshFingerprint": "Refresh Fingerprint",
     "canvasNoiseSeedPlaceholder": "Enter a seed string for canvas fingerprint",
@@ -1193,9 +1216,7 @@
       "cannotWhileRunning": "Stop the profile before changing its password."
     },
     "fingerprint": {
-      "notSupported": "Fingerprint editing is only available for Wayfern profiles.",
-      "lockedTitle": "Viewing & editing the fingerprint is a Pro feature",
-      "lockedDescription": "Your device information is protected in every profile. Viewing and editing a profile's fingerprint requires an active paid plan."
+      "notSupported": "Fingerprint editing is only available for Wayfern profiles."
     },
     "syncStatusValue": {
       "waiting": "Waiting",
@@ -1212,7 +1233,6 @@
     "extensionsTab": "Extensions",
     "groupsTab": "Groups",
     "managedNotice": "Extensions managed here will replace any manually installed extensions in profiles when launched.",
-    "proRequired": "Extension management is a Pro feature",
     "empty": "No extensions uploaded yet.",
     "noGroups": "No extension groups created yet.",
     "createGroup": "Create Group",
@@ -1270,14 +1290,6 @@
       "groupsDescription": "Delete {{count}} extension groups? {{names}}",
       "confirmButton": "Delete"
     }
-  },
-  "pro": {
-    "badge": "PRO",
-    "fingerprintLocked": "Fingerprint editing is a Pro feature",
-    "cookieCopyLocked": "Cookie copying is a Pro feature",
-    "cookieImportLocked": "Cookie import is a Pro feature",
-    "cookieExportLocked": "Cookie export is a Pro feature",
-    "cookieManagementLocked": "Cookie management is a Pro feature"
   },
   "dnsBlocklist": {
     "title": "DNS Blocklist",
@@ -1457,7 +1469,8 @@
     "noneOption": "None",
     "noValidProfiles": "No valid profiles selected.",
     "vpnGroupHeading": "VPNs",
-    "failedFallback": "Failed to assign proxy/VPN to profiles"
+    "failedFallback": "Failed to assign proxy/VPN to profiles",
+    "limitedResults": "Showing the first {{shown}} of {{total}} matches. Refine your search."
   },
   "groupAssignment": {
     "title": "Assign Group",
@@ -1647,7 +1660,9 @@
     "tagsHeader": "Tags",
     "noteHeader": "Note",
     "vpnsHeading": "VPNs",
-    "createByCountryHeading": "Create by country"
+    "createByCountryHeading": "Create by country",
+    "editAssignedProxy": "Edit assigned proxy: {{name}}",
+    "proxyPickerLimited": "Showing the first {{shown}} of {{total}} matches. Refine your search."
   },
   "dataTableActionBar": {
     "selected": "{{count}} selected",
@@ -1794,7 +1809,6 @@
     "cookieDbLocked": "Could not read cookies — the database is locked. Close the browser and try again.",
     "cookieDbUnavailable": "Could not read cookies — the cookie store is unavailable.",
     "selfHostedRequiresLogout": "Sign out of your Donut account before configuring a self-hosted server.",
-    "fingerprintRequiresPro": "Viewing or editing the fingerprint requires an active paid plan. Protection is included on all plans.",
     "proxyNotWorking": "The selected proxy isn't working, so the profile wasn't created.",
     "proxyPaymentRequired": "The selected proxy requires payment (402) — its subscription may have expired — so the profile wasn't created.",
     "vpnNotWorking": "The selected VPN isn't working, so the profile wasn't created.",
@@ -1802,7 +1816,11 @@
     "updateChecksumsUnavailable": "The update {{version}} could not be verified because its checksum file could not be retrieved. The update was not installed; it will be retried later.",
     "updateChecksumMismatch": "The downloaded update file {{file}} failed checksum verification and was discarded. Please try again.",
     "nameCannotBeEmpty": "Name cannot be empty",
-    "wayfernVersionNotAvailable": "Wayfern version {{requested}} is not available for download. The current version is {{current}}."
+    "wayfernVersionNotAvailable": "Wayfern version {{requested}} is not available for download. The current version is {{current}}.",
+    "syncDeviceIdInvalid": "Device ID must be 3–128 characters and use only letters, numbers, dots, underscores, or hyphens.",
+    "syncDeviceNameInvalid": "Device name must be 1–80 characters and cannot contain control characters.",
+    "syncDeviceIdBusy": "Close all synced profiles and wait for active sync transfers before changing the device ID.",
+    "profileSyncPrepareFailed": "Could not safely prepare this profile from sync. Check your connection and try again."
   },
   "rail": {
     "profiles": "Profiles",
@@ -1882,11 +1900,32 @@
       "connectionStatus": "Connection:",
       "statusUnknown": "Untested",
       "testConnection": "Test connection",
-      "disconnect": "Disconnect"
+      "disconnect": "Disconnect",
+      "syncDefaults": {
+        "title": "Profile sync defaults",
+        "description": "Control how persistent profiles join realtime sync.",
+        "newProfiles": "Regular sync for new profiles",
+        "newProfilesDescription": "Automatically enable Regular Sync after a profile is created, cloned, or imported.",
+        "enabledToast": "Regular Sync is now the default",
+        "disabledToast": "New profiles will start with sync disabled",
+        "everywhereDescription": "Enable Regular Sync for every eligible profile. Encrypted profiles stay encrypted; running, ephemeral, and cross-OS profiles are skipped.",
+        "enableEverywhere": "Use Regular Sync Everywhere",
+        "applySuccess": "Regular Sync enabled",
+        "applyPartial": "Some profiles were not updated",
+        "applyResult": "Enabled: {{enabled}}; already enabled: {{alreadyEnabled}}; skipped: {{skipped}}; failed: {{failed}}.",
+        "requiresConnection": "Save a sync connection before managing profile defaults."
+      },
+      "deviceIdentity": {
+        "title": "Device identity",
+        "description": "Stable identity used for realtime events and profile locks.",
+        "name": "Device name",
+        "id": "Device ID",
+        "changeHint": "Keep a unique ID per installation. Close synced profiles and wait for active transfers before changing it.",
+        "regenerate": "Generate new ID",
+        "saved": "Device identity saved"
+      }
     },
-    "deviceOrdinal": "{{ordinal}} of {{count}}",
-    "automationPrimaryOnly": "Browser automation runs only on your primary device (Device 1). Sign out there to use it here.",
-    "automationActiveHere": "Browser automation is active on this device."
+    "deviceOrdinal": "{{ordinal}} of {{count}}"
   },
   "shortcutsPage": {
     "title": "Keyboard shortcuts",
@@ -2006,10 +2045,6 @@
       "commercialDesc": "Free for a 2-week evaluation. After that, a paid plan keeps the project maintained and thriving."
     }
   },
-  "wayfernBlocked": {
-    "title": "Browser automation paused",
-    "description": "Your account was temporarily restricted from Pro browser features, usually from signing in on multiple devices at once. Sign out of other devices, then relaunch the profile to restore it."
-  },
   "wayfernConfigDialog": {
     "titleView": "View Fingerprint Settings - {{name}} ({{browser}})",
     "titleConfigure": "Configure Fingerprint Settings - {{name}} ({{browser}})",
@@ -2020,5 +2055,9 @@
   },
   "cookieCopy": {
     "noOtherTargets": "No other Wayfern profiles selected"
+  },
+  "wayfernTokenUnavailable": {
+    "title": "Wayfern token unavailable",
+    "description": "The hosted Wayfern token could not be refreshed. Local profiles and automation remain available, but token-backed fingerprint features may be limited."
   }
 }

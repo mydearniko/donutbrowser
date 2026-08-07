@@ -165,7 +165,6 @@
       "passwordSaved": "Senha de criptografia definida",
       "passwordMismatch": "As senhas não coincidem",
       "passwordTooShort": "A senha deve ter pelo menos 8 caracteres",
-      "requiresProOrOwner": "A criptografia de perfis está disponível para usuários Pro e proprietários de equipe.",
       "validatePassword": "Validar",
       "validateDialog": {
         "title": "Validar senha de criptografia",
@@ -173,7 +172,8 @@
         "submit": "Validar",
         "matchToast": "A senha está correta",
         "mismatchToast": "A senha não corresponde"
-      }
+      },
+      "teamOwnerRequired": "Apenas o proprietário da equipe pode gerenciar a criptografia de perfis."
     },
     "commercial": {
       "title": "Licença Comercial",
@@ -270,7 +270,6 @@
       "stopLeader": "Parar este perfil e todos os seus seguidores",
       "stopFollower": "Seguindo as ações de {{leaderName}}",
       "desyncedTooltip": "A sincronização falhou em {{url}}",
-      "paidFeature": "O sincronizador é um recurso pago",
       "wayfernOnly": "Apenas perfis Wayfern podem ser sincronizados",
       "selectFollowers": "Selecionar perfis seguidores",
       "selectFollowersDesc": "Escolha os perfis que replicarão as ações do perfil líder. Apenas perfis Wayfern parados podem ser selecionados.",
@@ -307,8 +306,7 @@
       "assignExtensionGroup": "Atribuir grupo de extensões",
       "copyCookies": "Copiar cookies",
       "runSelected": "Executar selecionados",
-      "stopSelected": "Parar selecionados",
-      "proRequired": "Plano Pro necessário para execução/parada em massa"
+      "stopSelected": "Parar selecionados"
     },
     "passwordProtectedBadge": "Protegido por Senha",
     "launchHook": {
@@ -381,7 +379,8 @@
       "description": "Criptografa os dados do perfil em disco. Necessário para iniciar."
     },
     "downloadingSubtitle": "Baixando…",
-    "browsersDownloading": "Os navegadores ainda estão sendo baixados. A criação de perfis ficará disponível assim que um download terminar."
+    "browsersDownloading": "Os navegadores ainda estão sendo baixados. A criação de perfis ficará disponível assim que um download terminar.",
+    "moreOptions": "Mais opções"
   },
   "deleteDialog": {
     "title": "Excluir Perfil",
@@ -406,8 +405,10 @@
       "disableSync": "Desativar sincronização",
       "editProxy": "Editar proxy",
       "deleteProxy": "Excluir proxy",
-      "cannotDelete_one": "Não é possível excluir: em uso por {{count}} perfil",
-      "cannotDelete_other": "Não é possível excluir: em uso por {{count}} perfis",
+      "deleteUnlinks_one": "Excluir e alternar {{count}} perfil para Direto",
+      "deleteUnlinks_other": "Excluir e alternar {{count}} perfis para Direto",
+      "deleteDescriptionWithUsage_one": "Esta ação não pode ser desfeita. Isso excluirá permanentemente o proxy \"{{name}}\" e alternará {{count}} perfil para Direto.",
+      "deleteDescriptionWithUsage_other": "Esta ação não pode ser desfeita. Isso excluirá permanentemente o proxy \"{{name}}\" e alternará {{count}} perfis para Direto.",
       "syncEnabled": "Sincronização ativada",
       "syncDisabled": "Sincronização desativada",
       "updateSyncFailed": "Falha ao atualizar a sincronização",
@@ -419,7 +420,31 @@
       "newVpn": "Nova VPN",
       "protocolCol": "Protocolo",
       "hostPort": "Host : porta",
-      "title": "Proxies e VPNs"
+      "title": "Proxies e VPNs",
+      "searchPlaceholder": "Pesquisar nome, host, IP ou localização...",
+      "filterAll": "Todos os estados",
+      "filterWorking": "Funcionando",
+      "filterFailed": "Falharam",
+      "filterUnchecked": "Não verificados",
+      "filterUsed": "Em uso",
+      "filterUnused": "Não usados",
+      "protocolAll": "Todos os protocolos",
+      "filteredCount": "{{shown}} de {{total}} proxies",
+      "workingCount": "{{count}} funcionando",
+      "failedCount": "{{count}} com falha",
+      "uncheckedCount": "{{count}} não verificados",
+      "usedCount": "{{count}} em uso",
+      "noMatches": "Nenhum proxy corresponde a estes filtros.",
+      "resultRange": "{{start}}–{{end}} de {{total}}",
+      "rowsPerPage": "Linhas por página",
+      "pageStatus": "Página {{page}} de {{pages}}",
+      "previousPage": "Página anterior",
+      "nextPage": "Próxima página",
+      "bulkCheckResult": "{{count}} proxies verificados: {{working}} funcionando, {{failed}} com falha",
+      "checkSelected": "Verificar proxies selecionados",
+      "copySelected": "Copiar URLs dos proxies selecionados",
+      "copiedSelected": "{{count}} URLs de proxy copiadas",
+      "copyFailed": "Falha ao copiar URLs de proxy"
     },
     "add": "Adicionar Proxy",
     "edit": "Editar Proxy",
@@ -846,8 +871,7 @@
       "selectFile": "Escolher Arquivo",
       "preview": "{{count}} cookies encontrados",
       "success": "{{imported}} cookies importados com sucesso ({{replaced}} substituídos)",
-      "error": "Falha ao importar cookies",
-      "proFeature": "A importação de cookies é um recurso Pro"
+      "error": "Falha ao importar cookies"
     },
     "export": {
       "title": "Exportar Cookies",
@@ -1053,7 +1077,6 @@
     "productSub": "Produto Sub",
     "brand": "Marca",
     "brandVersion": "Versão da Marca",
-    "proFeature": "Este é um recurso Pro",
     "generateFingerprint": "Gerar Impressão Digital",
     "refreshFingerprint": "Atualizar Impressão Digital",
     "canvasNoiseSeedPlaceholder": "Insira uma string seed para a impressão digital do canvas",
@@ -1193,9 +1216,7 @@
       "cannotWhileRunning": "Pare o perfil antes de alterar a senha."
     },
     "fingerprint": {
-      "notSupported": "A edição de impressão digital só está disponível para perfis Wayfern.",
-      "lockedTitle": "Visualizar e editar a impressão digital é um recurso Pro",
-      "lockedDescription": "As informações do seu dispositivo estão protegidas em todos os perfis. Visualizar e editar a impressão digital de um perfil requer um plano pago ativo."
+      "notSupported": "A edição de impressão digital só está disponível para perfis Wayfern."
     },
     "syncStatusValue": {
       "waiting": "Aguardando",
@@ -1212,7 +1233,6 @@
     "extensionsTab": "Extensões",
     "groupsTab": "Grupos",
     "managedNotice": "As extensões gerenciadas aqui substituirão quaisquer extensões instaladas manualmente nos perfis ao serem iniciados.",
-    "proRequired": "O gerenciamento de extensões é um recurso Pro",
     "empty": "Nenhuma extensão enviada ainda.",
     "noGroups": "Nenhum grupo de extensões criado ainda.",
     "createGroup": "Criar Grupo",
@@ -1270,14 +1290,6 @@
       "groupsDescription": "Excluir {{count}} grupos de extensões? {{names}}",
       "confirmButton": "Excluir"
     }
-  },
-  "pro": {
-    "badge": "PRO",
-    "fingerprintLocked": "A edição de impressão digital é um recurso Pro",
-    "cookieCopyLocked": "A cópia de cookies é um recurso Pro",
-    "cookieImportLocked": "A importação de cookies é um recurso Pro",
-    "cookieExportLocked": "A exportação de cookies é um recurso Pro",
-    "cookieManagementLocked": "O gerenciamento de cookies é um recurso Pro"
   },
   "dnsBlocklist": {
     "title": "Lista de bloqueio DNS",
@@ -1457,7 +1469,8 @@
     "noneOption": "Nenhum",
     "noValidProfiles": "Nenhum perfil válido selecionado.",
     "vpnGroupHeading": "VPNs",
-    "failedFallback": "Falha ao atribuir proxy/VPN aos perfis"
+    "failedFallback": "Falha ao atribuir proxy/VPN aos perfis",
+    "limitedResults": "Mostrando os primeiros {{shown}} de {{total}} resultados. Refine a pesquisa."
   },
   "groupAssignment": {
     "title": "Atribuir grupo",
@@ -1647,7 +1660,9 @@
     "tagsHeader": "Etiquetas",
     "noteHeader": "Nota",
     "vpnsHeading": "VPNs",
-    "createByCountryHeading": "Criar por país"
+    "createByCountryHeading": "Criar por país",
+    "editAssignedProxy": "Editar proxy atribuído: {{name}}",
+    "proxyPickerLimited": "Mostrando os primeiros {{shown}} de {{total}} resultados. Refine a pesquisa."
   },
   "dataTableActionBar": {
     "selected": "{{count}} selecionado(s)",
@@ -1794,7 +1809,6 @@
     "cookieDbLocked": "Não foi possível ler os cookies — o banco de dados está bloqueado. Feche o navegador e tente novamente.",
     "cookieDbUnavailable": "Não foi possível ler os cookies — o repositório de cookies está indisponível.",
     "selfHostedRequiresLogout": "Saia da sua conta Donut antes de configurar um servidor auto-hospedado.",
-    "fingerprintRequiresPro": "Visualizar ou editar a impressão digital requer um plano pago ativo. A proteção está incluída em todos os planos.",
     "proxyNotWorking": "O proxy selecionado não está funcionando, então o perfil não foi criado.",
     "proxyPaymentRequired": "O proxy selecionado exige pagamento (402) — sua assinatura pode ter expirado — então o perfil não foi criado.",
     "vpnNotWorking": "A VPN selecionada não está funcionando, então o perfil não foi criado.",
@@ -1802,7 +1816,11 @@
     "updateChecksumsUnavailable": "Não foi possível verificar a atualização {{version}} porque o arquivo de somas de verificação não pôde ser obtido. A atualização não foi instalada; será tentada novamente mais tarde.",
     "updateChecksumMismatch": "O arquivo de atualização baixado {{file}} falhou na verificação de soma de verificação e foi descartado. Tente novamente.",
     "nameCannotBeEmpty": "O nome não pode estar vazio",
-    "wayfernVersionNotAvailable": "A versão {{requested}} do Wayfern não está disponível para download. A versão atual é {{current}}."
+    "wayfernVersionNotAvailable": "A versão {{requested}} do Wayfern não está disponível para download. A versão atual é {{current}}.",
+    "syncDeviceIdInvalid": "O ID do dispositivo deve ter de 3 a 128 caracteres e usar apenas letras, números, pontos, sublinhados ou hifens.",
+    "syncDeviceNameInvalid": "O nome do dispositivo deve ter de 1 a 80 caracteres e não pode conter caracteres de controle.",
+    "syncDeviceIdBusy": "Feche todos os perfis sincronizados e aguarde as transferências ativas terminarem antes de alterar o ID do dispositivo.",
+    "profileSyncPrepareFailed": "Não foi possível preparar este perfil com segurança a partir da sincronização. Verifique sua conexão e tente novamente."
   },
   "rail": {
     "profiles": "Perfis",
@@ -1882,11 +1900,32 @@
       "connectionStatus": "Conexão:",
       "statusUnknown": "Não testado",
       "testConnection": "Testar conexão",
-      "disconnect": "Desconectar"
+      "disconnect": "Desconectar",
+      "syncDefaults": {
+        "title": "Padrões de sincronização de perfis",
+        "description": "Controle como os perfis persistentes entram na sincronização em tempo real.",
+        "newProfiles": "Sincronização regular para novos perfis",
+        "newProfilesDescription": "Ativa automaticamente a sincronização regular após criar, clonar ou importar um perfil.",
+        "enabledToast": "A sincronização regular agora é o padrão",
+        "disabledToast": "Novos perfis iniciarão com a sincronização desativada",
+        "everywhereDescription": "Ativa a sincronização regular em todos os perfis elegíveis. Perfis criptografados continuam criptografados; perfis em execução, efêmeros ou de outro sistema são ignorados.",
+        "enableEverywhere": "Usar sincronização regular em todos",
+        "applySuccess": "Sincronização regular ativada",
+        "applyPartial": "Alguns perfis não foram atualizados",
+        "applyResult": "Ativados: {{enabled}}; já ativos: {{alreadyEnabled}}; ignorados: {{skipped}}; falhas: {{failed}}.",
+        "requiresConnection": "Salve uma conexão de sincronização antes de gerenciar os padrões de perfil."
+      },
+      "deviceIdentity": {
+        "title": "Identidade do dispositivo",
+        "description": "Identidade estável usada para eventos em tempo real e bloqueios de perfil.",
+        "name": "Nome do dispositivo",
+        "id": "ID do dispositivo",
+        "changeHint": "Mantenha um ID exclusivo por instalação. Feche os perfis sincronizados e aguarde as transferências ativas terminarem antes de alterá-lo.",
+        "regenerate": "Gerar novo ID",
+        "saved": "Identidade do dispositivo salva"
+      }
     },
-    "deviceOrdinal": "{{ordinal}} de {{count}}",
-    "automationPrimaryOnly": "A automação do navegador funciona apenas no seu dispositivo principal (Dispositivo 1). Saia da conta nele para usá-la aqui.",
-    "automationActiveHere": "A automação do navegador está ativa neste dispositivo."
+    "deviceOrdinal": "{{ordinal}} de {{count}}"
   },
   "shortcutsPage": {
     "title": "Atalhos de teclado",
@@ -2006,10 +2045,6 @@
       "commercialDesc": "Gratuito durante uma avaliação de 2 semanas. Depois, um plano pago mantém o projeto ativo e próspero."
     }
   },
-  "wayfernBlocked": {
-    "title": "Automação do navegador pausada",
-    "description": "Sua conta foi temporariamente restringida dos recursos Pro do navegador, geralmente por entrar em vários dispositivos ao mesmo tempo. Saia dos outros dispositivos e reinicie o perfil para restaurá-la."
-  },
   "wayfernConfigDialog": {
     "titleView": "Ver configurações de impressão digital - {{name}} ({{browser}})",
     "titleConfigure": "Configurar impressão digital - {{name}} ({{browser}})",
@@ -2020,5 +2055,9 @@
   },
   "cookieCopy": {
     "noOtherTargets": "Nenhum outro perfil Wayfern selecionado"
+  },
+  "wayfernTokenUnavailable": {
+    "title": "Token do Wayfern indisponível",
+    "description": "Não foi possível atualizar o token hospedado do Wayfern. Os perfis locais e a automação continuam disponíveis, mas os recursos de impressão digital que dependem do token podem ficar limitados."
   }
 }

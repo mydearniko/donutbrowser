@@ -12,6 +12,7 @@ import {
   LuUser,
 } from "react-icons/lu";
 import { LoadingButton } from "@/components/loading-button";
+import { AnimatedSwitch } from "@/components/ui/animated-switch";
 import {
   AnimatedTabs,
   AnimatedTabsContent,
@@ -25,7 +26,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCloudAuth } from "@/hooks/use-cloud-auth";
 import { translateBackendError } from "@/lib/backend-errors";
-import { getEntitlements } from "@/lib/entitlements";
 import { showErrorToast, showSuccessToast } from "@/lib/toast-utils";
 import { cn } from "@/lib/utils";
 import type { SyncSettings } from "@/types";
@@ -38,6 +38,21 @@ interface AccountPageProps {
 }
 
 type ConnectionStatus = "unknown" | "testing" | "connected" | "error";
+
+interface EnableRegularSyncResult {
+  total: number;
+  enabled: number;
+  already_enabled: number;
+  skipped_running: number;
+  skipped_ephemeral: number;
+  skipped_cross_os: number;
+  failed: number;
+}
+
+interface SyncDeviceIdentity {
+  device_id: string;
+  device_name: string;
+}
 
 export function AccountPage({
   isOpen,
@@ -64,6 +79,17 @@ export function AccountPage({
   const [showToken, setShowToken] = useState(false);
   const [isSavingSelfHosted, setIsSavingSelfHosted] = useState(false);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [hasSavedSelfHostedConfig, setHasSavedSelfHostedConfig] =
+    useState(false);
+  const [regularSyncByDefault, setRegularSyncByDefault] = useState(false);
+  const [deviceId, setDeviceId] = useState("");
+  const [deviceName, setDeviceName] = useState("");
+  const [savedDeviceId, setSavedDeviceId] = useState("");
+  const [savedDeviceName, setSavedDeviceName] = useState("");
+  const [isSavingDeviceIdentity, setIsSavingDeviceIdentity] = useState(false);
+  const [isSavingSyncDefault, setIsSavingSyncDefault] = useState(false);
+  const [isApplyingSyncEverywhere, setIsApplyingSyncEverywhere] =
+    useState(false);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("unknown");
 
@@ -109,6 +135,14 @@ export function AccountPage({
       const settings = await invoke<SyncSettings>("get_sync_settings");
       setServerUrl(settings.sync_server_url ?? "");
       setToken(settings.sync_token ?? "");
+      setHasSavedSelfHostedConfig(
+        Boolean(settings.sync_server_url && settings.sync_token),
+      );
+      setRegularSyncByDefault(settings.default_profile_sync_mode === "Regular");
+      setDeviceId(settings.sync_device_id ?? "");
+      setDeviceName(settings.sync_device_name ?? "");
+      setSavedDeviceId(settings.sync_device_id ?? "");
+      setSavedDeviceName(settings.sync_device_name ?? "");
       setConnectionStatus(
         settings.sync_server_url && settings.sync_token ? "unknown" : "unknown",
       );
@@ -160,6 +194,7 @@ export function AccountPage({
       } catch (e) {
         console.error("Failed to restart sync service:", e);
       }
+      setHasSavedSelfHostedConfig(Boolean(serverUrl && token));
       showSuccessToast(t("sync.config.settingsSaved"));
     } catch (error) {
       console.error("Failed to save sync settings:", error);
@@ -186,6 +221,8 @@ export function AccountPage({
       }
       setServerUrl("");
       setToken("");
+      setHasSavedSelfHostedConfig(false);
+      setRegularSyncByDefault(false);
       setConnectionStatus("unknown");
       showSuccessToast(t("sync.config.disconnected"));
     } catch (error) {
@@ -193,6 +230,84 @@ export function AccountPage({
       showErrorToast(t("sync.config.disconnectFailed"));
     } finally {
       setIsSavingSelfHosted(false);
+    }
+  }, [t]);
+
+  const handleRegularSyncDefaultChange = useCallback(
+    async (enabled: boolean) => {
+      setIsSavingSyncDefault(true);
+      try {
+        await invoke("set_regular_sync_default", { enabled });
+        setRegularSyncByDefault(enabled);
+        showSuccessToast(
+          t(
+            enabled
+              ? "account.selfHosted.syncDefaults.enabledToast"
+              : "account.selfHosted.syncDefaults.disabledToast",
+          ),
+        );
+      } catch (error) {
+        showErrorToast(translateBackendError(t as never, error));
+      } finally {
+        setIsSavingSyncDefault(false);
+      }
+    },
+    [t],
+  );
+
+  const handleSaveDeviceIdentity = useCallback(async () => {
+    setIsSavingDeviceIdentity(true);
+    try {
+      const identity = await invoke<SyncDeviceIdentity>(
+        "save_sync_device_identity",
+        {
+          deviceId,
+          deviceName,
+        },
+      );
+      setDeviceId(identity.device_id);
+      setDeviceName(identity.device_name);
+      setSavedDeviceId(identity.device_id);
+      setSavedDeviceName(identity.device_name);
+      await invoke("restart_sync_service");
+      showSuccessToast(t("account.selfHosted.deviceIdentity.saved"));
+    } catch (error) {
+      showErrorToast(translateBackendError(t as never, error));
+    } finally {
+      setIsSavingDeviceIdentity(false);
+    }
+  }, [deviceId, deviceName, t]);
+
+  const handleEnableRegularSyncEverywhere = useCallback(async () => {
+    setIsApplyingSyncEverywhere(true);
+    try {
+      const result = await invoke<EnableRegularSyncResult>(
+        "enable_regular_sync_everywhere",
+      );
+      setRegularSyncByDefault(true);
+      const skipped =
+        result.skipped_running +
+        result.skipped_ephemeral +
+        result.skipped_cross_os;
+      const description = t("account.selfHosted.syncDefaults.applyResult", {
+        enabled: result.enabled,
+        alreadyEnabled: result.already_enabled,
+        skipped,
+        failed: result.failed,
+      });
+      if (result.failed > 0) {
+        showErrorToast(t("account.selfHosted.syncDefaults.applyPartial"), {
+          description,
+        });
+      } else {
+        showSuccessToast(t("account.selfHosted.syncDefaults.applySuccess"), {
+          description,
+        });
+      }
+    } catch (error) {
+      showErrorToast(translateBackendError(t as never, error));
+    } finally {
+      setIsApplyingSyncEverywhere(false);
     }
   }, [t]);
 
@@ -302,24 +417,6 @@ export function AccountPage({
                     )}
                   </div>
                 )}
-
-                {isLoggedIn &&
-                  user &&
-                  getEntitlements(user).browserAutomation &&
-                  user.isPrimaryDevice === false && (
-                    <p className="text-xs text-warning">
-                      {t("account.automationPrimaryOnly")}
-                    </p>
-                  )}
-                {isLoggedIn &&
-                  user &&
-                  getEntitlements(user).browserAutomation &&
-                  user.isPrimaryDevice === true &&
-                  (user.deviceCount ?? 1) > 1 && (
-                    <p className="text-xs text-success">
-                      {t("account.automationActiveHere")}
-                    </p>
-                  )}
 
                 <div className="mt-2 flex flex-wrap gap-2">
                   {isLoggedIn ? (
@@ -502,6 +599,148 @@ export function AccountPage({
                         {t("account.selfHosted.disconnect")}
                       </Button>
                     )}
+                  </div>
+
+                  <div className="rounded-lg border border-border/60 bg-card/50 p-3">
+                    <div>
+                      <p className="text-sm font-medium">
+                        {t("account.selfHosted.deviceIdentity.title")}
+                      </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {t("account.selfHosted.deviceIdentity.description")}
+                      </p>
+                    </div>
+
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="sync-device-name" className="text-xs">
+                          {t("account.selfHosted.deviceIdentity.name")}
+                        </Label>
+                        <Input
+                          id="sync-device-name"
+                          value={deviceName}
+                          maxLength={80}
+                          onChange={(event) =>
+                            setDeviceName(event.target.value)
+                          }
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="sync-device-id" className="text-xs">
+                          {t("account.selfHosted.deviceIdentity.id")}
+                        </Label>
+                        <Input
+                          id="sync-device-id"
+                          value={deviceId}
+                          maxLength={128}
+                          onChange={(event) => setDeviceId(event.target.value)}
+                          autoComplete="off"
+                          spellCheck={false}
+                          className="font-mono text-xs"
+                        />
+                      </div>
+                    </div>
+
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {t("account.selfHosted.deviceIdentity.changeHint")}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1.5 text-xs"
+                        disabled={isSavingDeviceIdentity}
+                        onClick={() => setDeviceId(crypto.randomUUID())}
+                      >
+                        <LuRefreshCw className="size-3" />
+                        {t("account.selfHosted.deviceIdentity.regenerate")}
+                      </Button>
+                      <LoadingButton
+                        size="sm"
+                        className="h-8 text-xs"
+                        isLoading={isSavingDeviceIdentity}
+                        disabled={
+                          !deviceId.trim() ||
+                          !deviceName.trim() ||
+                          (deviceId === savedDeviceId &&
+                            deviceName === savedDeviceName)
+                        }
+                        onClick={() => void handleSaveDeviceIdentity()}
+                      >
+                        {t("common.buttons.save")}
+                      </LoadingButton>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border/60 bg-card/50 p-3">
+                    <div>
+                      <p className="text-sm font-medium">
+                        {t("account.selfHosted.syncDefaults.title")}
+                      </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {t("account.selfHosted.syncDefaults.description")}
+                      </p>
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between gap-3">
+                      <Label
+                        htmlFor="regular-sync-by-default"
+                        className="min-w-0 cursor-pointer"
+                      >
+                        <span className="text-xs font-medium">
+                          {t("account.selfHosted.syncDefaults.newProfiles")}
+                        </span>
+                        <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                          {t(
+                            "account.selfHosted.syncDefaults.newProfilesDescription",
+                          )}
+                        </span>
+                      </Label>
+                      <AnimatedSwitch
+                        id="regular-sync-by-default"
+                        checked={regularSyncByDefault}
+                        disabled={
+                          !hasSavedSelfHostedConfig ||
+                          isSavingSyncDefault ||
+                          isApplyingSyncEverywhere
+                        }
+                        onCheckedChange={(enabled) =>
+                          void handleRegularSyncDefaultChange(enabled)
+                        }
+                        aria-label={t(
+                          "account.selfHosted.syncDefaults.newProfiles",
+                        )}
+                      />
+                    </div>
+
+                    <div className="mt-3 border-t border-border/60 pt-3">
+                      <p className="text-xs text-muted-foreground">
+                        {t(
+                          "account.selfHosted.syncDefaults.everywhereDescription",
+                        )}
+                      </p>
+                      <LoadingButton
+                        size="sm"
+                        variant="outline"
+                        className="mt-2 h-8 text-xs"
+                        isLoading={isApplyingSyncEverywhere}
+                        disabled={
+                          !hasSavedSelfHostedConfig || isSavingSyncDefault
+                        }
+                        onClick={() => void handleEnableRegularSyncEverywhere()}
+                      >
+                        {t("account.selfHosted.syncDefaults.enableEverywhere")}
+                      </LoadingButton>
+                      {!hasSavedSelfHostedConfig && (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {t(
+                            "account.selfHosted.syncDefaults.requiresConnection",
+                          )}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}

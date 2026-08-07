@@ -18,20 +18,13 @@ export function useTeamLocks(currentUserId?: string) {
   useEffect(() => {
     void fetchLocks();
 
-    const unlistenAcquired = listen<{ profileId: string }>(
-      "team-lock-acquired",
-      () => void fetchLocks(),
-    );
-    const unlistenReleased = listen<{ profileId: string }>(
-      "team-lock-released",
+    const unlistenChanged = listen<{ profileId: string; action: string }>(
+      "profile-lock-changed",
       () => void fetchLocks(),
     );
 
     return () => {
-      void unlistenAcquired.then((fn) => {
-        fn();
-      });
-      void unlistenReleased.then((fn) => {
+      void unlistenChanged.then((fn) => {
         fn();
       });
     };
@@ -41,6 +34,7 @@ export function useTeamLocks(currentUserId?: string) {
     (profileId: string): boolean => {
       const lock = locks.find((l) => l.profileId === profileId);
       if (!lock) return false;
+      if (lock.ownedByCurrent) return false;
       if (currentUserId && lock.lockedBy === currentUserId) return false;
       return true;
     },

@@ -1,6 +1,10 @@
 use super::client::SyncClient;
 use super::encryption;
-use super::manifest::{compute_diff, generate_manifest, get_cache_path, HashCache, SyncManifest};
+use super::manifest::{
+  compute_diff_with_base, generate_manifest_cancellable, get_cache_path, hash_manifest_bytes,
+  is_high_value_profile_file, manifest_content_hash, manifests_have_same_content, HashCache,
+  ManifestFileEntry, SyncManifest,
+};
 use super::types::*;
 use crate::events;
 use crate::profile::types::{BrowserProfile, SyncMode};
@@ -9,6 +13,8 @@ use crate::settings_manager::SettingsManager;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::future::Future;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -19,6 +25,7 @@ use tokio::sync::{Mutex as TokioMutex, Semaphore};
 /// entity's user-edit timestamp in unix seconds. Used to resolve sync conflicts
 /// (last-write-wins) from a HEAD request without downloading the object body.
 const UPDATED_AT_META_KEY: &str = "updated-at";
+const MANIFEST_HASH_META_KEY: &str = "manifest-hash";
 
 lazy_static::lazy_static! {
   static ref SYNC_CANCEL_FLAGS: StdMutex<HashMap<String, Arc<AtomicBool>>> =
@@ -27,9 +34,10 @@ lazy_static::lazy_static! {
 
 fn register_sync_cancel(profile_id: &str) -> Arc<AtomicBool> {
   let mut map = SYNC_CANCEL_FLAGS.lock().unwrap();
-  let flag = Arc::new(AtomicBool::new(false));
-  map.insert(profile_id.to_string(), flag.clone());
-  flag
+  map
+    .entry(profile_id.to_string())
+    .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+    .clone()
 }
 
 fn clear_sync_cancel(profile_id: &str) {
@@ -42,6 +50,30 @@ pub fn request_sync_cancel(profile_id: &str) -> bool {
     true
   } else {
     false
+  }
+}
+
+pub(super) fn preempt_profile_sync(profile_id: &str) {
+  // An in-flight scheduler entry can still be waiting for the profile mutex.
+  // Only cancel a transfer that has registered its flag; otherwise launch-time
+  // preflight would inherit a cancellation intended for work that never began.
+  let _ = request_sync_cancel(profile_id);
+}
+
+async fn await_sync_or_cancel<T, F>(cancel: &AtomicBool, future: F) -> SyncResult<T>
+where
+  F: Future<Output = SyncResult<T>>,
+{
+  tokio::pin!(future);
+  loop {
+    tokio::select! {
+      result = &mut future => return result,
+      _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
+        if cancel.load(Ordering::Relaxed) {
+          return Err(SyncError::Cancelled);
+        }
+      }
+    }
   }
 }
 
@@ -58,38 +90,12 @@ pub async fn cancel_profile_sync(profile_id: String) -> Result<bool, String> {
 }
 
 /// Upload/download concurrency limit
-const SYNC_CONCURRENCY: usize = 32;
+const SYNC_CONCURRENCY: usize = 64;
+const BULK_TRANSFER_CONCURRENCY: usize = 4;
+const BULK_TRANSFER_MAX_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Max retries for individual file uploads/downloads
 const MAX_FILE_RETRIES: u32 = 3;
-
-/// Critical file patterns — if any of these fail to upload/download, the sync is aborted.
-const CRITICAL_FILE_PATTERNS: &[&str] = &[
-  "Cookies",
-  "Login Data",
-  "Local Storage",
-  "Local State",
-  "Preferences",
-  "Secure Preferences",
-  "Web Data",
-  "Extension Cookies",
-  // Chromium profile equivalents
-  "cookies.sqlite",
-  "key4.db",
-  "logins.json",
-  "cert9.db",
-  "places.sqlite",
-  "formhistory.sqlite",
-  "permissions.sqlite",
-  "prefs.js",
-  "storage.sqlite",
-];
-
-fn is_critical_file(path: &str) -> bool {
-  CRITICAL_FILE_PATTERNS
-    .iter()
-    .any(|pattern| path.contains(pattern))
-}
 
 /// Validate that a manifest-supplied relative file path is safe to join onto a
 /// profile directory before writing/deleting. The manifest is remote-controlled
@@ -115,15 +121,21 @@ fn is_safe_manifest_path(path: &str) -> bool {
 /// uncommitted data (e.g. cookies, login data). Since WAL files are
 /// excluded from sync, we must checkpoint them into the main database
 /// files before generating the manifest to avoid data loss.
-fn checkpoint_sqlite_wal_files(profile_dir: &Path) {
-  fn find_wal_files(dir: &Path, wal_files: &mut Vec<PathBuf>) {
+fn checkpoint_sqlite_wal_files(profile_dir: &Path, cancel: Option<&AtomicBool>) {
+  fn find_wal_files(dir: &Path, wal_files: &mut Vec<PathBuf>, cancel: Option<&AtomicBool>) {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+      return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
       return;
     };
     for entry in entries.flatten() {
+      if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        return;
+      }
       let path = entry.path();
       if path.is_dir() {
-        find_wal_files(&path, wal_files);
+        find_wal_files(&path, wal_files, cancel);
       } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
         if name.ends_with("-wal") {
           wal_files.push(path);
@@ -133,9 +145,12 @@ fn checkpoint_sqlite_wal_files(profile_dir: &Path) {
   }
 
   let mut wal_files = Vec::new();
-  find_wal_files(profile_dir, &mut wal_files);
+  find_wal_files(profile_dir, &mut wal_files, cancel);
 
   for wal_path in &wal_files {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+      return;
+    }
     // Only checkpoint non-empty WAL files
     let is_non_empty = fs::metadata(wal_path).map(|m| m.len() > 0).unwrap_or(false);
     if !is_non_empty {
@@ -179,7 +194,7 @@ struct SyncResumeState {
   profile_id: String,
   direction: String,
   started_at: String,
-  completed_files: HashSet<String>,
+  completed_files: HashMap<String, String>,
 }
 
 impl SyncResumeState {
@@ -211,15 +226,229 @@ impl SyncResumeState {
     let json = serde_json::to_string(self).map_err(|e| {
       SyncError::SerializationError(format!("Failed to serialize resume state: {e}"))
     })?;
-    fs::write(&path, json)
-      .map_err(|e| SyncError::IoError(format!("Failed to write resume state: {e}")))?;
-    Ok(())
+    atomic_write(&path, json.as_bytes())
   }
 
   fn delete(profile_dir: &Path) {
     let path = Self::path(profile_dir);
     let _ = fs::remove_file(&path);
   }
+}
+
+fn atomic_write(path: &Path, data: &[u8]) -> SyncResult<()> {
+  let parent = path
+    .parent()
+    .ok_or_else(|| SyncError::IoError(format!("Path has no parent: {}", path.display())))?;
+  fs::create_dir_all(parent)
+    .map_err(|e| SyncError::IoError(format!("Failed to create {}: {e}", parent.display())))?;
+  let mut temporary = tempfile::Builder::new()
+    .prefix(".donut-sync-")
+    .suffix(".tmp")
+    .tempfile_in(parent)
+    .map_err(|e| {
+      SyncError::IoError(format!(
+        "Failed to create a temporary file in {}: {e}",
+        parent.display()
+      ))
+    })?;
+  temporary
+    .write_all(data)
+    .and_then(|_| temporary.as_file_mut().sync_all())
+    .map_err(|e| {
+      SyncError::IoError(format!(
+        "Failed to write {} atomically: {e}",
+        path.display()
+      ))
+    })?;
+  temporary.persist(path).map_err(|e| {
+    SyncError::IoError(format!(
+      "Failed to replace {} atomically: {}",
+      path.display(),
+      e.error
+    ))
+  })?;
+  Ok(())
+}
+
+struct PreparedUploadBundle {
+  _temporary_directory: tempfile::TempDir,
+  archive_path: PathBuf,
+  files: Vec<ManifestFileEntry>,
+}
+
+fn prepare_upload_bundle(
+  profile_dir: &Path,
+  files: Vec<ManifestFileEntry>,
+  encryption_key: Option<[u8; 32]>,
+) -> SyncResult<PreparedUploadBundle> {
+  let temporary_directory = tempfile::tempdir()
+    .map_err(|error| SyncError::IoError(format!("Failed to stage sync bundle: {error}")))?;
+  let archive_path = temporary_directory.path().join("upload.tar.gz");
+  let output = fs::File::create(&archive_path)
+    .map_err(|error| SyncError::IoError(format!("Failed to create sync bundle: {error}")))?;
+  let compression = if encryption_key.is_some() {
+    flate2::Compression::none()
+  } else {
+    flate2::Compression::fast()
+  };
+  let encoder = flate2::write::GzEncoder::new(output, compression);
+  let mut archive = tar::Builder::new(encoder);
+
+  for file in &files {
+    if !is_safe_manifest_path(&file.path) {
+      return Err(SyncError::InvalidData(format!(
+        "Unsafe path in local manifest: {:?}",
+        file.path
+      )));
+    }
+    let file_path = profile_dir.join(&file.path);
+    let data = fs::read(&file_path).map_err(|error| {
+      SyncError::IoError(format!("Failed to read {}: {error}", file_path.display()))
+    })?;
+    let actual_hash = hash_manifest_bytes(&file.path, &data)?;
+    if actual_hash != file.hash {
+      return Err(SyncError::ConflictError(format!(
+        "File changed after manifest generation: {}",
+        file_path.display()
+      )));
+    }
+    let payload = if let Some(key) = encryption_key.as_ref() {
+      encryption::encrypt_bytes(key, &data).map_err(|error| {
+        SyncError::InvalidData(format!("Failed to encrypt {}: {error}", file.path))
+      })?
+    } else {
+      data
+    };
+
+    let mut header = tar::Header::new_gnu();
+    header.set_mode(0o600);
+    header.set_mtime(0);
+    header.set_size(payload.len() as u64);
+    header.set_cksum();
+    archive
+      .append_data(&mut header, &file.path, payload.as_slice())
+      .map_err(|error| {
+        SyncError::IoError(format!(
+          "Failed to add {} to sync bundle: {error}",
+          file.path
+        ))
+      })?;
+  }
+
+  let encoder = archive
+    .into_inner()
+    .map_err(|error| SyncError::IoError(format!("Failed to finish sync bundle: {error}")))?;
+  encoder
+    .finish()
+    .map_err(|error| SyncError::IoError(format!("Failed to compress sync bundle: {error}")))?;
+
+  Ok(PreparedUploadBundle {
+    _temporary_directory: temporary_directory,
+    archive_path,
+    files,
+  })
+}
+
+fn extract_download_bundle(
+  archive_path: &Path,
+  profile_dir: &Path,
+  files: Vec<ManifestFileEntry>,
+  encryption_key: Option<[u8; 32]>,
+) -> SyncResult<Vec<ManifestFileEntry>> {
+  let input = fs::File::open(archive_path)
+    .map_err(|error| SyncError::IoError(format!("Failed to open sync bundle: {error}")))?;
+  let decoder = flate2::read::GzDecoder::new(input);
+  let mut archive = tar::Archive::new(decoder);
+  let mut expected: HashMap<String, ManifestFileEntry> = files
+    .iter()
+    .cloned()
+    .map(|file| (file.path.clone(), file))
+    .collect();
+  let mut completed = Vec::with_capacity(files.len());
+  let entries = archive
+    .entries()
+    .map_err(|error| SyncError::InvalidData(format!("Invalid sync bundle: {error}")))?;
+
+  for entry in entries {
+    let mut entry = entry
+      .map_err(|error| SyncError::InvalidData(format!("Invalid sync bundle entry: {error}")))?;
+    if !entry.header().entry_type().is_file() {
+      return Err(SyncError::InvalidData(
+        "Sync bundle contains a non-file entry".to_string(),
+      ));
+    }
+    let relative_path = entry
+      .path()
+      .map_err(|error| SyncError::InvalidData(format!("Invalid bundle path: {error}")))?
+      .to_str()
+      .ok_or_else(|| SyncError::InvalidData("Bundle path is not valid UTF-8".to_string()))?
+      .to_string();
+    if !is_safe_manifest_path(&relative_path) {
+      return Err(SyncError::InvalidData(format!(
+        "Unsafe path in sync bundle: {relative_path:?}"
+      )));
+    }
+    let expected_file = expected.remove(&relative_path).ok_or_else(|| {
+      SyncError::InvalidData(format!(
+        "Unexpected or duplicate bundle path: {relative_path}"
+      ))
+    })?;
+    let allowed_size = expected_file
+      .size
+      .saturating_add(if encryption_key.is_some() { 1024 } else { 0 });
+    if entry.size() > allowed_size {
+      return Err(SyncError::InvalidData(format!(
+        "Bundle entry is larger than expected: {relative_path}"
+      )));
+    }
+
+    let mut payload = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut payload).map_err(|error| {
+      SyncError::IoError(format!(
+        "Failed to read bundle entry {relative_path}: {error}"
+      ))
+    })?;
+    let data = if let Some(key) = encryption_key.as_ref() {
+      encryption::decrypt_bytes(key, &payload).map_err(|error| {
+        SyncError::InvalidData(format!("Failed to decrypt {relative_path}: {error}"))
+      })?
+    } else {
+      payload
+    };
+    let actual_hash = hash_manifest_bytes(&relative_path, &data)?;
+    if actual_hash != expected_file.hash {
+      return Err(SyncError::InvalidData(format!(
+        "Downloaded file hash does not match manifest: {relative_path}"
+      )));
+    }
+    atomic_write(&profile_dir.join(&relative_path), &data)?;
+    completed.push(expected_file);
+  }
+
+  if !expected.is_empty() {
+    return Err(SyncError::InvalidData(format!(
+      "Sync bundle omitted {} requested file(s)",
+      expected.len()
+    )));
+  }
+  Ok(completed)
+}
+
+fn base_manifest_path(profile_dir: &Path) -> PathBuf {
+  profile_dir.join(".donut-sync").join("base-manifest.json")
+}
+
+fn load_base_manifest(profile_dir: &Path) -> Option<SyncManifest> {
+  fs::read(base_manifest_path(profile_dir))
+    .ok()
+    .and_then(|data| serde_json::from_slice(&data).ok())
+}
+
+fn save_base_manifest(profile_dir: &Path, manifest: &SyncManifest) -> SyncResult<()> {
+  let data = serde_json::to_vec(manifest).map_err(|e| {
+    SyncError::SerializationError(format!("Failed to serialize base manifest: {e}"))
+  })?;
+  atomic_write(&base_manifest_path(profile_dir), &data)
 }
 
 /// Tracks live sync progress and emits throttled events to the frontend
@@ -445,20 +674,173 @@ impl SyncEngine {
     Ok(())
   }
 
+  fn merge_profile_metadata(
+    local: &BrowserProfile,
+    remote: &BrowserProfile,
+    remote_updated_at: u64,
+  ) -> BrowserProfile {
+    let mut merged = local.clone();
+    merged.name = remote.name.clone();
+    merged.tags = remote.tags.clone();
+    merged.note = remote.note.clone();
+    merged.proxy_id = remote.proxy_id.clone();
+    merged.vpn_id = remote.vpn_id.clone();
+    merged.group_id = remote.group_id.clone();
+    merged.extension_group_id = remote.extension_group_id.clone();
+    merged.window_color = remote.window_color.clone();
+    merged.launch_hook = remote.launch_hook.clone();
+    merged.proxy_bypass_rules = remote.proxy_bypass_rules.clone();
+    merged.dns_blocklist = remote.dns_blocklist.clone();
+    merged.updated_at = Some(remote.updated_at.unwrap_or(0).max(remote_updated_at));
+    merged
+  }
+
+  async fn reconcile_profile_metadata(
+    &self,
+    profile: &BrowserProfile,
+    key_prefix: &str,
+  ) -> SyncResult<BrowserProfile> {
+    let profile_id = profile.id.to_string();
+    let remote_key = format!("{}profiles/{}/metadata.json", key_prefix, profile_id);
+    let stat = self.client.stat(&remote_key).await?;
+    if !stat.exists {
+      self
+        .upload_profile_metadata(&profile_id, profile, key_prefix)
+        .await?;
+      return Ok(profile.clone());
+    }
+
+    let local_updated_at = profile.updated_at.unwrap_or(0);
+    let remote_updated_at = self.remote_updated_at(&stat, &remote_key).await;
+    if local_updated_at > remote_updated_at {
+      self
+        .upload_profile_metadata(&profile_id, profile, key_prefix)
+        .await?;
+      return Ok(profile.clone());
+    }
+
+    if remote_updated_at > local_updated_at || (remote_updated_at == 0 && local_updated_at == 0) {
+      let remote = self.download_profile_metadata(&remote_key).await?;
+      let merged = Self::merge_profile_metadata(profile, &remote, remote_updated_at);
+      ProfileManager::instance()
+        .save_profile(&merged)
+        .map_err(|e| SyncError::IoError(format!("Failed to save profile metadata: {e}")))?;
+      return Ok(merged);
+    }
+
+    Ok(profile.clone())
+  }
+
+  fn save_profile_sync_timestamp(profile: &BrowserProfile) -> SyncResult<()> {
+    let mut updated = profile.clone();
+    updated.last_sync = Some(crate::proxy_manager::now_secs());
+    ProfileManager::instance()
+      .save_runtime_profile(&updated)
+      .map_err(|e| SyncError::IoError(format!("Failed to save profile sync timestamp: {e}")))
+  }
+
+  fn profile_encryption_key(profile: &BrowserProfile) -> SyncResult<Option<[u8; 32]>> {
+    if !profile.is_encrypted_sync() {
+      return Ok(None);
+    }
+    let password = encryption::load_e2e_password()
+      .map_err(|e| SyncError::InvalidData(format!("Failed to load E2E password: {e}")))?
+      .ok_or_else(|| {
+        let _ = events::emit("profile-sync-e2e-password-required", ());
+        SyncError::InvalidData("E2E password not set".to_string())
+      })?;
+    let salt = profile.encryption_salt.as_deref().ok_or_else(|| {
+      SyncError::InvalidData("Encryption salt missing on encrypted profile".to_string())
+    })?;
+    encryption::derive_profile_key(&password, salt)
+      .map(Some)
+      .map_err(|e| SyncError::InvalidData(format!("Key derivation failed: {e}")))
+  }
+
+  async fn remote_manifest_matches_base(
+    &self,
+    profile: &BrowserProfile,
+    key_prefix: &str,
+    encryption_key: Option<&[u8; 32]>,
+  ) -> SyncResult<bool> {
+    let profile_id = profile.id.to_string();
+    let profile_dir = ProfileManager::instance()
+      .get_profiles_dir()
+      .join(&profile_id);
+    let Some(base) =
+      load_base_manifest(&profile_dir).filter(|manifest| manifest.profile_id == profile_id)
+    else {
+      return Ok(false);
+    };
+    let has_baseline_payload = base
+      .files
+      .iter()
+      .filter(|file| file.path != "metadata.json" && is_safe_manifest_path(&file.path))
+      .any(|file| profile_dir.join(&file.path).is_file());
+    if base.files.iter().any(|file| file.path != "metadata.json") && !has_baseline_payload {
+      return Ok(false);
+    }
+
+    let remote_key = format!("{}profiles/{}/manifest.json", key_prefix, profile_id);
+    let stat = self.client.stat(&remote_key).await?;
+    if !stat.exists {
+      return Ok(false);
+    }
+
+    let base_hash = manifest_content_hash(&base);
+    if stat
+      .metadata
+      .as_ref()
+      .and_then(|metadata| metadata.get(MANIFEST_HASH_META_KEY))
+      == Some(&base_hash)
+    {
+      return Ok(true);
+    }
+
+    let remote = self
+      .download_existing_manifest(&remote_key, encryption_key)
+      .await?;
+    Ok(
+      remote.profile_id == base.profile_id
+        && remote.encrypted == base.encrypted
+        && manifests_have_same_content(&remote, &base),
+    )
+  }
+
+  /// Prepare a leased profile for launch without walking its local directory
+  /// when the remote commit still matches the last successful handoff.
+  pub async fn prepare_profile_for_launch(
+    &self,
+    app_handle: &tauri::AppHandle,
+    profile: &BrowserProfile,
+  ) -> SyncResult<()> {
+    if Self::is_self_hosted_sync().await && profile.created_by_id.is_some() {
+      return Ok(());
+    }
+
+    let key_prefix = Self::get_team_key_prefix(profile).await;
+    let encryption_key = Self::profile_encryption_key(profile)?;
+    let (reconciled_profile, remote_unchanged) = tokio::try_join!(
+      self.reconcile_profile_metadata(profile, &key_prefix),
+      self.remote_manifest_matches_base(profile, &key_prefix, encryption_key.as_ref()),
+    )?;
+
+    if remote_unchanged {
+      log::info!(
+        "Profile {} remote commit is unchanged; skipping launch-time directory scan",
+        profile.id
+      );
+      return Ok(());
+    }
+
+    self.sync_profile(app_handle, &reconciled_profile).await
+  }
+
   pub async fn sync_profile(
     &self,
     app_handle: &tauri::AppHandle,
     profile: &BrowserProfile,
   ) -> SyncResult<()> {
-    if profile.is_cross_os() {
-      log::info!(
-        "Cross-OS profile: {} ({}) — syncing metadata only",
-        profile.name,
-        profile.id
-      );
-      return self.sync_cross_os_metadata(app_handle, profile).await;
-    }
-
     // Skip team profiles for self-hosted sync
     if Self::is_self_hosted_sync().await && profile.created_by_id.is_some() {
       log::info!(
@@ -492,34 +874,39 @@ impl SyncEngine {
       return Ok(());
     }
 
+    let profile_id = profile.id.to_string();
+    let cancel_flag = register_sync_cancel(&profile_id);
+    let _cancel_guard = SyncCancelGuard(profile_id.clone());
+    if cancel_flag.load(Ordering::Relaxed) {
+      return Err(SyncError::Cancelled);
+    }
+
+    if profile.is_cross_os() {
+      log::info!(
+        "Cross-OS profile: {} ({}) — syncing metadata only",
+        profile.name,
+        profile.id
+      );
+      return self
+        .sync_cross_os_metadata(app_handle, profile, &cancel_flag)
+        .await;
+    }
+
     // Derive encryption key if encrypted sync
-    let encryption_key = if profile.is_encrypted_sync() {
-      let password = encryption::load_e2e_password()
-        .map_err(|e| SyncError::InvalidData(format!("Failed to load E2E password: {e}")))?
-        .ok_or_else(|| {
-          let _ = events::emit("profile-sync-e2e-password-required", ());
-          SyncError::InvalidData("E2E password not set".to_string())
-        })?;
-      let salt = profile.encryption_salt.as_deref().ok_or_else(|| {
-        SyncError::InvalidData("Encryption salt missing on encrypted profile".to_string())
-      })?;
-      let key = encryption::derive_profile_key(&password, salt)
-        .map_err(|e| SyncError::InvalidData(format!("Key derivation failed: {e}")))?;
-      Some(key)
-    } else {
-      None
-    };
+    let encryption_key = Self::profile_encryption_key(profile)?;
 
     let profile_manager = ProfileManager::instance();
     let profiles_dir = profile_manager.get_profiles_dir();
     let profile_dir = profiles_dir.join(profile.id.to_string());
-    let profile_id = profile.id.to_string();
-
-    let cancel_flag = register_sync_cancel(&profile_id);
-    let _cancel_guard = SyncCancelGuard(profile_id.clone());
 
     // Determine team key prefix for team profiles
     let key_prefix = Self::get_team_key_prefix(profile).await;
+    let profile = self
+      .reconcile_profile_metadata(profile, &key_prefix)
+      .await?;
+    if cancel_flag.load(Ordering::Relaxed) {
+      return Err(SyncError::Cancelled);
+    }
 
     log::info!(
       "Starting delta sync for profile: {} ({}){}",
@@ -551,14 +938,22 @@ impl SyncEngine {
 
     // Checkpoint any SQLite WAL files to ensure all data is in the main DB
     // before we generate the manifest (WAL files are excluded from sync)
-    checkpoint_sqlite_wal_files(&profile_dir);
+    checkpoint_sqlite_wal_files(&profile_dir, Some(cancel_flag.as_ref()));
+    if cancel_flag.load(Ordering::Relaxed) {
+      return Err(SyncError::Cancelled);
+    }
 
     // Load or create hash cache
     let cache_path = get_cache_path(&profile_dir);
     let mut hash_cache = HashCache::load(&cache_path);
 
     // Generate local manifest
-    let local_manifest = generate_manifest(&profile_id, &profile_dir, &mut hash_cache)?;
+    let local_manifest = generate_manifest_cancellable(
+      &profile_id,
+      &profile_dir,
+      &mut hash_cache,
+      cancel_flag.as_ref(),
+    )?;
 
     let total_size: u64 = local_manifest.files.iter().map(|f| f.size).sum();
     let has_cookies = local_manifest
@@ -586,12 +981,27 @@ impl SyncEngine {
     let remote_manifest = self
       .download_manifest(&remote_manifest_key, encryption_key.as_ref())
       .await?;
+    if cancel_flag.load(Ordering::Relaxed) {
+      return Err(SyncError::Cancelled);
+    }
 
-    // Compute diff
-    let diff = compute_diff(&local_manifest, remote_manifest.as_ref());
+    // Compare against the last completed handoff when available. The lease
+    // makes this a single-writer flow, so a three-way baseline determines the
+    // changed side without trusting device clocks.
+    let base_manifest =
+      load_base_manifest(&profile_dir).filter(|manifest| manifest.profile_id == profile_id);
+    let diff = compute_diff_with_base(
+      &local_manifest,
+      remote_manifest.as_ref(),
+      base_manifest.as_ref(),
+    );
 
     if diff.is_empty() {
       log::info!("Profile {} is already in sync", profile_id);
+      save_base_manifest(&profile_dir, &local_manifest)?;
+      Self::save_profile_sync_timestamp(&profile)?;
+      SyncResumeState::delete(&profile_dir);
+      let _ = events::emit("profiles-changed", ());
       let _ = events::emit(
         "profile-sync-status",
         serde_json::json!({
@@ -667,25 +1077,23 @@ impl SyncEngine {
         .await?;
     }
 
-    if cancel_flag.load(Ordering::Relaxed) {
-      log::info!("Sync cancelled for profile {} after downloads", profile_id);
-      return Err(SyncError::Cancelled);
-    }
-
     // Delete local files that don't exist remotely (when remote is newer)
     for path in &diff.files_to_delete_local {
       // The delete list comes from the remote-controlled manifest; guard against
       // traversal/absolute paths so it can't delete files outside the profile.
       if !is_safe_manifest_path(path) {
-        log::warn!(
-          "Skipping local delete with unsafe relative path: {:?}",
-          path
-        );
-        continue;
+        return Err(SyncError::InvalidData(format!(
+          "Unsafe delete path in remote manifest: {path:?}"
+        )));
       }
       let file_path = profile_dir.join(path);
       if file_path.exists() {
-        let _ = fs::remove_file(&file_path);
+        fs::remove_file(&file_path).map_err(|error| {
+          SyncError::IoError(format!(
+            "Failed to delete stale local file {}: {error}",
+            file_path.display()
+          ))
+        })?;
         log::debug!("Deleted local file: {}", path);
       }
     }
@@ -693,14 +1101,9 @@ impl SyncEngine {
     // Delete remote files that don't exist locally (when local is newer)
     for path in &diff.files_to_delete_remote {
       let remote_key = format!("{}profiles/{}/files/{}", key_prefix, profile_id, path);
-      let _ = self.client.delete(&remote_key, None).await;
+      self.client.delete(&remote_key, None).await?;
       log::debug!("Deleted remote file: {}", path);
     }
-
-    // Upload metadata.json (sanitized profile)
-    self
-      .upload_profile_metadata(&profile_id, profile, &key_prefix)
-      .await?;
 
     // If this sync changed the local profile directory (downloaded files and/or
     // deleted local files), the manifest generated at the START of the sync is
@@ -713,7 +1116,12 @@ impl SyncEngine {
       !diff.files_to_download.is_empty() || !diff.files_to_delete_local.is_empty();
     let final_manifest = if local_changed {
       let mut new_cache = HashCache::load(&cache_path);
-      let mut regenerated = generate_manifest(&profile_id, &profile_dir, &mut new_cache)?;
+      let mut regenerated = generate_manifest_cancellable(
+        &profile_id,
+        &profile_dir,
+        &mut new_cache,
+        cancel_flag.as_ref(),
+      )?;
       new_cache.save(&cache_path)?;
       regenerated.encrypted = encryption_key.is_some();
       regenerated
@@ -732,6 +1140,7 @@ impl SyncEngine {
         &key_prefix,
       )
       .await?;
+    save_base_manifest(&profile_dir, &final_manifest)?;
 
     // Sync completed successfully — clean up resume state
     SyncResumeState::delete(&profile_dir);
@@ -747,37 +1156,7 @@ impl SyncEngine {
       let _ = self.sync_vpn(vpn_id, Some(app_handle)).await;
     }
 
-    // Download remote metadata and merge changes (name, tags, notes, etc.)
-    let remote_metadata_key = format!("{}profiles/{}/metadata.json", key_prefix, profile_id);
-    if let Ok(remote_meta) = self.download_profile_metadata(&remote_metadata_key).await {
-      let mut updated_profile = profile.clone();
-      // Merge fields that can be changed on other devices
-      updated_profile.name = remote_meta.name;
-      updated_profile.tags = remote_meta.tags;
-      updated_profile.note = remote_meta.note;
-      updated_profile.proxy_id = remote_meta.proxy_id;
-      updated_profile.vpn_id = remote_meta.vpn_id;
-      updated_profile.group_id = remote_meta.group_id;
-      updated_profile.extension_group_id = remote_meta.extension_group_id;
-      updated_profile.window_color = remote_meta.window_color;
-      updated_profile.last_sync = Some(
-        std::time::SystemTime::now()
-          .duration_since(std::time::UNIX_EPOCH)
-          .unwrap()
-          .as_secs(),
-      );
-      let _ = profile_manager.save_profile(&updated_profile);
-    } else {
-      // Fallback: just update last_sync
-      let mut updated_profile = profile.clone();
-      updated_profile.last_sync = Some(
-        std::time::SystemTime::now()
-          .duration_since(std::time::UNIX_EPOCH)
-          .unwrap()
-          .as_secs(),
-      );
-      let _ = profile_manager.save_profile(&updated_profile);
-    }
+    Self::save_profile_sync_timestamp(&profile)?;
     let _ = events::emit("profiles-changed", ());
 
     let _ = events::emit(
@@ -803,12 +1182,23 @@ impl SyncEngine {
       return Ok(None);
     }
 
+    self
+      .download_existing_manifest(key, encryption_key)
+      .await
+      .map(Some)
+  }
+
+  async fn download_existing_manifest(
+    &self,
+    key: &str,
+    encryption_key: Option<&[u8; 32]>,
+  ) -> SyncResult<SyncManifest> {
     let presign = self.client.presign_download(key).await?;
     let data = self.client.download_bytes(&presign.url).await?;
 
     // Try parsing as plaintext JSON first (unencrypted or backwards-compatible)
     if let Ok(manifest) = serde_json::from_slice::<SyncManifest>(&data) {
-      return Ok(Some(manifest));
+      return Ok(manifest);
     }
 
     // If plaintext parse failed and we have an encryption key, try decrypting
@@ -818,7 +1208,7 @@ impl SyncEngine {
       let manifest: SyncManifest = serde_json::from_slice(&decrypted).map_err(|e| {
         SyncError::SerializationError(format!("Failed to parse decrypted manifest: {e}"))
       })?;
-      return Ok(Some(manifest));
+      return Ok(manifest);
     }
 
     Err(SyncError::SerializationError(
@@ -850,27 +1240,30 @@ impl SyncEngine {
     };
 
     let remote_key = format!("{}profiles/{}/manifest.json", key_prefix, profile_id);
+    let mut metadata = HashMap::new();
+    metadata.insert(
+      MANIFEST_HASH_META_KEY.to_string(),
+      manifest_content_hash(manifest),
+    );
     let presign = self
       .client
-      .presign_upload(&remote_key, Some(content_type))
+      .presign_upload_with_metadata(&remote_key, Some(content_type), Some(metadata))
       .await?;
 
     self
       .client
-      .upload_bytes(&presign.url, &upload_data, Some(content_type))
+      .upload_bytes_with_metadata(
+        &presign.url,
+        &upload_data,
+        Some(content_type),
+        presign.metadata.as_ref(),
+      )
       .await?;
 
     Ok(())
   }
 
   async fn download_profile_metadata(&self, key: &str) -> SyncResult<BrowserProfile> {
-    let stat = self.client.stat(key).await?;
-    if !stat.exists {
-      return Err(SyncError::InvalidData(
-        "Remote metadata not found".to_string(),
-      ));
-    }
-
     let presign = self.client.presign_download(key).await?;
     let raw = self.client.download_bytes(&presign.url).await?;
     let data = encryption::maybe_unseal_after_download(&raw)
@@ -887,35 +1280,15 @@ impl SyncEngine {
     &self,
     app_handle: &tauri::AppHandle,
     profile: &BrowserProfile,
+    cancel_flag: &AtomicBool,
   ) -> SyncResult<()> {
     let profile_id = profile.id.to_string();
     let key_prefix = Self::get_team_key_prefix(profile).await;
-    let profile_manager = ProfileManager::instance();
-
-    // Upload our metadata
-    self
-      .upload_profile_metadata(&profile_id, profile, &key_prefix)
+    let profile = self
+      .reconcile_profile_metadata(profile, &key_prefix)
       .await?;
-
-    // Download remote metadata and merge if remote has changes
-    let remote_metadata_key = format!("{}profiles/{}/metadata.json", key_prefix, profile_id);
-    if let Ok(remote_meta) = self.download_profile_metadata(&remote_metadata_key).await {
-      let mut updated = profile.clone();
-      updated.name = remote_meta.name;
-      updated.tags = remote_meta.tags;
-      updated.note = remote_meta.note;
-      updated.proxy_id = remote_meta.proxy_id;
-      updated.vpn_id = remote_meta.vpn_id;
-      updated.group_id = remote_meta.group_id;
-      updated.extension_group_id = remote_meta.extension_group_id;
-      updated.window_color = remote_meta.window_color;
-      updated.last_sync = Some(
-        std::time::SystemTime::now()
-          .duration_since(std::time::UNIX_EPOCH)
-          .unwrap()
-          .as_secs(),
-      );
-      let _ = profile_manager.save_profile(&updated);
+    if cancel_flag.load(Ordering::Relaxed) {
+      return Err(SyncError::Cancelled);
     }
 
     // Sync associated entities
@@ -925,6 +1298,8 @@ impl SyncEngine {
     if let Some(group_id) = &profile.group_id {
       let _ = self.sync_group(group_id, Some(app_handle)).await;
     }
+
+    Self::save_profile_sync_timestamp(&profile)?;
 
     let _ = events::emit("profiles-changed", ());
     let _ = events::emit(
@@ -954,21 +1329,10 @@ impl SyncEngine {
     let json = serde_json::to_string_pretty(&sanitized)
       .map_err(|e| SyncError::SerializationError(format!("Failed to serialize profile: {e}")))?;
 
-    let (payload, content_type) = encryption::maybe_seal_for_upload(json.as_bytes())
-      .map_err(|e| SyncError::InvalidData(format!("Failed to seal profile metadata: {e}")))?;
-
     let remote_key = format!("{}profiles/{}/metadata.json", key_prefix, profile_id);
-    let presign = self
-      .client
-      .presign_upload(&remote_key, Some(content_type))
-      .await?;
-
     self
-      .client
-      .upload_bytes(&presign.url, &payload, Some(content_type))
-      .await?;
-
-    Ok(())
+      .upload_config_json(&remote_key, &json, sanitized.updated_at.unwrap_or(0))
+      .await
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -993,7 +1357,13 @@ impl SyncEngine {
 
     let already_done: HashSet<String> = resume_state
       .as_ref()
-      .map(|s| s.completed_files.clone())
+      .map(|state| {
+        files
+          .iter()
+          .filter(|file| state.completed_files.get(&file.path) == Some(&file.hash))
+          .map(|file| file.path.clone())
+          .collect()
+      })
       .unwrap_or_default();
 
     let files_to_process: Vec<_> = files
@@ -1027,10 +1397,57 @@ impl SyncEngine {
         profile_id: profile_id.to_string(),
         direction: "upload".to_string(),
         started_at: Utc::now().to_rfc3339(),
-        completed_files: HashSet::new(),
+        completed_files: HashMap::new(),
       });
     }
     let resume_state = Arc::new(TokioMutex::new(resume_state.unwrap()));
+
+    let total_bytes: u64 = files.iter().map(|f| f.size).sum();
+    let already_bytes: u64 = files
+      .iter()
+      .filter(|f| already_done.contains(&f.path))
+      .map(|f| f.size)
+      .sum();
+    let tracker = Arc::new(SyncProgressTracker::new(
+      profile_id.to_string(),
+      profile_name.to_string(),
+      "uploading",
+      files.len() as u64,
+      total_bytes,
+    ));
+    tracker
+      .completed_files
+      .store(skipped as u64, Ordering::Relaxed);
+    tracker
+      .completed_bytes
+      .store(already_bytes, Ordering::Relaxed);
+    tracker.emit_final();
+
+    let pending_bytes: u64 = files_to_process.iter().map(|file| file.size).sum();
+    if files_to_process.len() >= 8 || pending_bytes >= 4 * 1024 * 1024 {
+      let capabilities = self.client.capabilities().await;
+      if capabilities.bulk_transfer
+        && capabilities.max_bundle_items > 0
+        && capabilities.max_bundle_bytes > 0
+        && files_to_process
+          .iter()
+          .all(|file| file.size <= capabilities.max_bundle_bytes.min(BULK_TRANSFER_MAX_BYTES))
+      {
+        return self
+          .upload_profile_files_bulk(
+            profile_id,
+            profile_dir,
+            &files_to_process,
+            encryption_key,
+            key_prefix,
+            cancel_flag,
+            &capabilities,
+            resume_state,
+            tracker,
+          )
+          .await;
+      }
+    }
 
     // Get batch presigned URLs
     let items: Vec<(String, Option<String>)> = files_to_process
@@ -1044,7 +1461,8 @@ impl SyncEngine {
       })
       .collect();
 
-    let batch_response = self.client.presign_upload_batch(items).await?;
+    let batch_response =
+      await_sync_or_cancel(cancel_flag, self.client.presign_upload_batch(items)).await?;
 
     // Build URL map
     let url_map: HashMap<String, String> = batch_response
@@ -1052,29 +1470,6 @@ impl SyncEngine {
       .into_iter()
       .map(|item| (item.key, item.url))
       .collect();
-
-    let total_bytes: u64 = files.iter().map(|f| f.size).sum();
-    let already_bytes: u64 = files
-      .iter()
-      .filter(|f| already_done.contains(&f.path))
-      .map(|f| f.size)
-      .sum();
-
-    let tracker = Arc::new(SyncProgressTracker::new(
-      profile_id.to_string(),
-      profile_name.to_string(),
-      "uploading",
-      files.len() as u64,
-      total_bytes,
-    ));
-    // Pre-populate tracker with resumed progress
-    tracker
-      .completed_files
-      .store(skipped as u64, Ordering::Relaxed);
-    tracker
-      .completed_bytes
-      .store(already_bytes, Ordering::Relaxed);
-    tracker.emit_final();
 
     let semaphore = Arc::new(Semaphore::new(SYNC_CONCURRENCY));
     let client = self.client.clone();
@@ -1102,29 +1497,28 @@ impl SyncEngine {
       // Legitimate profile files are always plain relative paths, so a real file
       // is never skipped.
       if !is_safe_manifest_path(&file.path) {
-        log::warn!("Skipping file with unsafe relative path: {:?}", file.path);
-        continue;
+        return Err(SyncError::InvalidData(format!(
+          "Unsafe path in local manifest: {:?}",
+          file.path
+        )));
       }
       let sem = semaphore.clone();
       let file_path = profile_dir.join(&file.path);
       let relative_path = file.path.clone();
       let file_size = file.size;
+      let expected_hash = file.hash.clone();
       let remote_key = format!(
         "{}profiles/{}/files/{}",
         key_prefix, profile_id_owned, file.path
       );
       let url = url_map.get(&remote_key).cloned();
-      let critical = is_critical_file(&file.path);
+      let critical = is_high_value_profile_file(&file.path);
 
       if url.is_none() {
-        log::warn!("No presigned URL for {}", remote_key);
-        if critical {
-          return Err(SyncError::NetworkError(format!(
-            "No presigned URL for critical file: {}",
-            file.path
-          )));
-        }
-        continue;
+        return Err(SyncError::NetworkError(format!(
+          "No presigned URL for file: {}",
+          file.path
+        )));
       }
 
       let url = url.unwrap();
@@ -1147,11 +1541,6 @@ impl SyncEngine {
 
         let data = match fs::read(&file_path) {
           Ok(d) => d,
-          Err(e) if e.kind() == std::io::ErrorKind::NotFound && !critical => {
-            log::debug!("File disappeared, skipping: {}", file_path.display());
-            tracker.record_success(0);
-            return Ok(relative_path);
-          }
           Err(e) => {
             let msg = format!("Failed to read {}: {}", file_path.display(), e);
             log::warn!("{}", msg);
@@ -1159,6 +1548,23 @@ impl SyncEngine {
             return Err((relative_path, msg, critical));
           }
         };
+
+        match hash_manifest_bytes(&relative_path, &data) {
+          Ok(actual_hash) if actual_hash == expected_hash => {}
+          Ok(_) => {
+            let msg = format!(
+              "File changed after manifest generation: {}",
+              file_path.display()
+            );
+            tracker.record_failure();
+            return Err((relative_path, msg, critical));
+          }
+          Err(error) => {
+            let msg = format!("Failed to verify {}: {error}", file_path.display());
+            tracker.record_failure();
+            return Err((relative_path, msg, critical));
+          }
+        }
 
         let upload_data = if let Some(ref key) = enc_key {
           match encryption::encrypt_bytes(key, &data) {
@@ -1177,9 +1583,11 @@ impl SyncEngine {
         // Retry loop for network uploads
         let mut last_err = String::new();
         for attempt in 0..MAX_FILE_RETRIES {
-          match client
-            .upload_bytes(&url, &upload_data, content_type.as_deref())
-            .await
+          match await_sync_or_cancel(
+            cancel_flag_task.as_ref(),
+            client.upload_bytes(&url, &upload_data, content_type.as_deref()),
+          )
+          .await
           {
             Ok(()) => {
               tracker.record_success(file_size);
@@ -1187,14 +1595,19 @@ impl SyncEngine {
               // Record in resume state, save periodically
               {
                 let mut state = resume_state.lock().await;
-                state.completed_files.insert(relative_path.clone());
-                let count = save_counter.fetch_add(1, Ordering::Relaxed);
-                if count.is_multiple_of(50) {
+                state
+                  .completed_files
+                  .insert(relative_path.clone(), expected_hash.clone());
+                let count = save_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                if count.is_multiple_of(128) {
                   let _ = state.save(&profile_dir_clone);
                 }
               }
 
               return Ok(relative_path);
+            }
+            Err(SyncError::Cancelled) => {
+              return Err((relative_path, "cancelled".to_string(), false));
             }
             Err(e) => {
               last_err = format!("{}", e);
@@ -1226,6 +1639,7 @@ impl SyncEngine {
     // Collect results
     let mut critical_failures = Vec::new();
     let mut non_critical_failures = Vec::new();
+    let mut task_failures = Vec::new();
 
     for handle in handles {
       match handle.await {
@@ -1234,6 +1648,7 @@ impl SyncEngine {
         Ok(Err((path, msg, false))) => non_critical_failures.push((path, msg)),
         Err(e) => {
           log::warn!("Upload task panicked: {}", e);
+          task_failures.push(e.to_string());
         }
       }
     }
@@ -1246,22 +1661,187 @@ impl SyncEngine {
 
     tracker.emit_final();
 
-    if !non_critical_failures.is_empty() {
-      log::warn!(
-        "Upload completed with {} non-critical failures for profile {}",
-        non_critical_failures.len(),
-        profile_id_owned
-      );
+    if cancel_flag.load(Ordering::Relaxed) {
+      return Err(SyncError::Cancelled);
     }
 
-    if !critical_failures.is_empty() {
-      let file_list: Vec<&str> = critical_failures.iter().map(|(p, _)| p.as_str()).collect();
+    if !critical_failures.is_empty()
+      || !non_critical_failures.is_empty()
+      || !task_failures.is_empty()
+    {
+      let file_list: Vec<&str> = critical_failures
+        .iter()
+        .chain(&non_critical_failures)
+        .map(|(path, _)| path.as_str())
+        .collect();
       return Err(SyncError::IoError(format!(
-        "Critical files failed to upload: {}. Sync aborted to prevent data loss.",
-        file_list.join(", ")
+        "Profile upload was incomplete (files: {}; tasks: {}). Manifest commit aborted.",
+        file_list.join(", "),
+        task_failures.len()
       )));
     }
 
+    Ok(())
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  async fn upload_profile_files_bulk(
+    &self,
+    profile_id: &str,
+    profile_dir: &Path,
+    files: &[&ManifestFileEntry],
+    encryption_key: Option<&[u8; 32]>,
+    key_prefix: &str,
+    cancel_flag: &Arc<AtomicBool>,
+    capabilities: &SyncCapabilities,
+    resume_state: Arc<TokioMutex<SyncResumeState>>,
+    tracker: Arc<SyncProgressTracker>,
+  ) -> SyncResult<()> {
+    let max_items = capabilities.max_bundle_items.clamp(1, 512);
+    let max_bytes = capabilities
+      .max_bundle_bytes
+      .clamp(1, BULK_TRANSFER_MAX_BYTES);
+    let mut chunks: Vec<Vec<ManifestFileEntry>> = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0_u64;
+    for file in files {
+      if !current.is_empty()
+        && (current.len() >= max_items || current_bytes.saturating_add(file.size) > max_bytes)
+      {
+        chunks.push(std::mem::take(&mut current));
+        current_bytes = 0;
+      }
+      current.push((*file).clone());
+      current_bytes = current_bytes.saturating_add(file.size);
+    }
+    if !current.is_empty() {
+      chunks.push(current);
+    }
+
+    log::info!(
+      "Uploading {} files for profile {} in {} compressed bundle(s)",
+      files.len(),
+      profile_id,
+      chunks.len()
+    );
+    let semaphore = Arc::new(Semaphore::new(BULK_TRANSFER_CONCURRENCY));
+    let remote_prefix = format!("{}profiles/{}/files/", key_prefix, profile_id);
+    let mut handles = Vec::with_capacity(chunks.len());
+
+    for chunk in chunks {
+      let semaphore = semaphore.clone();
+      let client = self.client.clone();
+      let profile_dir = profile_dir.to_path_buf();
+      let remote_prefix = remote_prefix.clone();
+      let resume_state = resume_state.clone();
+      let tracker = tracker.clone();
+      let cancel_flag = cancel_flag.clone();
+      let encryption_key = encryption_key.copied();
+      handles.push(tokio::spawn(async move {
+        let file_count = chunk.len();
+        let result: SyncResult<()> = async {
+          let _permit = semaphore
+            .acquire_owned()
+            .await
+            .map_err(|error| SyncError::IoError(error.to_string()))?;
+          if cancel_flag.load(Ordering::Relaxed) {
+            return Err(SyncError::Cancelled);
+          }
+
+          let build_dir = profile_dir.clone();
+          let prepared = tokio::task::spawn_blocking(move || {
+            prepare_upload_bundle(&build_dir, chunk, encryption_key)
+          })
+          .await
+          .map_err(|error| SyncError::IoError(format!("Bundle builder failed: {error}")))??;
+          if cancel_flag.load(Ordering::Relaxed) {
+            return Err(SyncError::Cancelled);
+          }
+
+          let mut last_error = None;
+          let mut uploaded = None;
+          for attempt in 0..MAX_FILE_RETRIES {
+            match await_sync_or_cancel(
+              cancel_flag.as_ref(),
+              client.upload_bundle(&remote_prefix, &prepared.archive_path),
+            )
+            .await
+            {
+              Ok(result) => {
+                uploaded = Some(result);
+                break;
+              }
+              Err(SyncError::Cancelled) => return Err(SyncError::Cancelled),
+              Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < MAX_FILE_RETRIES {
+                  tokio::time::sleep(std::time::Duration::from_millis(
+                    250 * (u64::from(attempt) + 1),
+                  ))
+                  .await;
+                }
+              }
+            }
+          }
+          let uploaded = uploaded.ok_or_else(|| {
+            last_error.unwrap_or_else(|| {
+              SyncError::NetworkError("Bulk upload failed without a response".to_string())
+            })
+          })?;
+          if uploaded.item_count != prepared.files.len() {
+            return Err(SyncError::InvalidData(format!(
+              "Bulk upload committed {} of {} files",
+              uploaded.item_count,
+              prepared.files.len()
+            )));
+          }
+
+          {
+            let mut state = resume_state.lock().await;
+            for file in &prepared.files {
+              state
+                .completed_files
+                .insert(file.path.clone(), file.hash.clone());
+              tracker.record_success(file.size);
+            }
+            state.save(&profile_dir)?;
+          }
+          Ok(())
+        }
+        .await;
+        if result.is_err() {
+          for _ in 0..file_count {
+            tracker.record_failure();
+          }
+        }
+        result
+      }));
+    }
+
+    let mut failures = Vec::new();
+    let mut cancelled = false;
+    for handle in handles {
+      match handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(SyncError::Cancelled)) => cancelled = true,
+        Ok(Err(error)) => failures.push(error.to_string()),
+        Err(error) => failures.push(format!("Bulk upload task failed: {error}")),
+      }
+    }
+    {
+      let state = resume_state.lock().await;
+      state.save(profile_dir)?;
+    }
+    tracker.emit_final();
+    if cancelled || cancel_flag.load(Ordering::Relaxed) {
+      return Err(SyncError::Cancelled);
+    }
+    if !failures.is_empty() {
+      return Err(SyncError::IoError(format!(
+        "Profile bulk upload was incomplete: {}",
+        failures.join("; ")
+      )));
+    }
     Ok(())
   }
 
@@ -1287,7 +1867,13 @@ impl SyncEngine {
 
     let already_done: HashSet<String> = resume_state
       .as_ref()
-      .map(|s| s.completed_files.clone())
+      .map(|state| {
+        files
+          .iter()
+          .filter(|file| state.completed_files.get(&file.path) == Some(&file.hash))
+          .map(|file| file.path.clone())
+          .collect()
+      })
       .unwrap_or_default();
 
     let files_to_process: Vec<_> = files
@@ -1321,25 +1907,10 @@ impl SyncEngine {
         profile_id: profile_id.to_string(),
         direction: "download".to_string(),
         started_at: Utc::now().to_rfc3339(),
-        completed_files: HashSet::new(),
+        completed_files: HashMap::new(),
       });
     }
     let resume_state = Arc::new(TokioMutex::new(resume_state.unwrap()));
-
-    // Get batch presigned URLs
-    let keys: Vec<String> = files_to_process
-      .iter()
-      .map(|f| format!("{}profiles/{}/files/{}", key_prefix, profile_id, f.path))
-      .collect();
-
-    let batch_response = self.client.presign_download_batch(keys).await?;
-
-    // Build URL map
-    let url_map: HashMap<String, String> = batch_response
-      .items
-      .into_iter()
-      .map(|item| (item.key, item.url))
-      .collect();
 
     let total_bytes: u64 = files.iter().map(|f| f.size).sum();
     let already_bytes: u64 = files
@@ -1347,7 +1918,6 @@ impl SyncEngine {
       .filter(|f| already_done.contains(&f.path))
       .map(|f| f.size)
       .sum();
-
     let tracker = Arc::new(SyncProgressTracker::new(
       profile_id.to_string(),
       profile_name.to_string(),
@@ -1363,6 +1933,48 @@ impl SyncEngine {
       .store(already_bytes, Ordering::Relaxed);
     tracker.emit_final();
 
+    let pending_bytes: u64 = files_to_process.iter().map(|file| file.size).sum();
+    if files_to_process.len() >= 8 || pending_bytes >= 4 * 1024 * 1024 {
+      let capabilities = self.client.capabilities().await;
+      if capabilities.bulk_transfer
+        && capabilities.max_bundle_items > 0
+        && capabilities.max_bundle_bytes > 0
+        && files_to_process
+          .iter()
+          .all(|file| file.size <= capabilities.max_bundle_bytes.min(BULK_TRANSFER_MAX_BYTES))
+      {
+        return self
+          .download_profile_files_bulk(
+            profile_id,
+            profile_dir,
+            &files_to_process,
+            encryption_key,
+            key_prefix,
+            cancel_flag,
+            &capabilities,
+            resume_state,
+            tracker,
+          )
+          .await;
+      }
+    }
+
+    // Get batch presigned URLs
+    let keys: Vec<String> = files_to_process
+      .iter()
+      .map(|f| format!("{}profiles/{}/files/{}", key_prefix, profile_id, f.path))
+      .collect();
+
+    let batch_response =
+      await_sync_or_cancel(cancel_flag, self.client.presign_download_batch(keys)).await?;
+
+    // Build URL map
+    let url_map: HashMap<String, String> = batch_response
+      .items
+      .into_iter()
+      .map(|item| (item.key, item.url))
+      .collect();
+
     let semaphore = Arc::new(Semaphore::new(SYNC_CONCURRENCY));
     let client = self.client.clone();
     let profile_dir = profile_dir.to_path_buf();
@@ -1375,42 +1987,34 @@ impl SyncEngine {
     let save_counter = Arc::new(AtomicU64::new(0));
 
     for file in &files_to_process {
-      if cancel_flag.load(Ordering::Relaxed) {
-        log::info!(
-          "Download cancelled for profile {} before scheduling more files",
-          profile_id_owned
-        );
-        break;
-      }
       // Reject paths that would escape the profile dir (path traversal /
       // absolute path). On download the manifest is remote-controlled, so this
       // is the load-bearing containment check; on upload it is defense-in-depth.
       // Legitimate profile files are always plain relative paths, so a real file
       // is never skipped.
       if !is_safe_manifest_path(&file.path) {
-        log::warn!("Skipping file with unsafe relative path: {:?}", file.path);
-        continue;
+        return Err(SyncError::InvalidData(format!(
+          "Unsafe path in remote manifest: {:?}",
+          file.path
+        )));
       }
       let sem = semaphore.clone();
       let file_path = profile_dir.join(&file.path);
       let relative_path = file.path.clone();
       let file_size = file.size;
+      let expected_hash = file.hash.clone();
       let remote_key = format!(
         "{}profiles/{}/files/{}",
         key_prefix, profile_id_owned, file.path
       );
       let url = url_map.get(&remote_key).cloned();
-      let critical = is_critical_file(&file.path);
+      let critical = is_high_value_profile_file(&file.path);
 
       if url.is_none() {
-        log::warn!("No presigned URL for {}", remote_key);
-        if critical {
-          return Err(SyncError::NetworkError(format!(
-            "No presigned URL for critical file: {}",
-            file.path
-          )));
-        }
-        continue;
+        return Err(SyncError::NetworkError(format!(
+          "No presigned URL for file: {}",
+          file.path
+        )));
       }
 
       let url = url.unwrap();
@@ -1431,10 +2035,7 @@ impl SyncEngine {
         // Retry loop for network downloads
         let mut last_err = String::new();
         for attempt in 0..MAX_FILE_RETRIES {
-          if cancel_flag_task.load(Ordering::Relaxed) {
-            return Err((relative_path, "cancelled".to_string(), false));
-          }
-          match client.download_bytes(&url).await {
+          match await_sync_or_cancel(cancel_flag_task.as_ref(), client.download_bytes(&url)).await {
             Ok(data) => {
               let write_data = if let Some(ref key) = enc_key {
                 match encryption::decrypt_bytes(key, &data) {
@@ -1450,10 +2051,24 @@ impl SyncEngine {
                 data
               };
 
-              if let Some(parent) = file_path.parent() {
-                let _ = fs::create_dir_all(parent);
+              match hash_manifest_bytes(&relative_path, &write_data) {
+                Ok(actual_hash) if actual_hash == expected_hash => {}
+                Ok(_) => {
+                  let msg = format!(
+                    "Downloaded file hash does not match manifest: {}",
+                    relative_path
+                  );
+                  tracker.record_failure();
+                  return Err((relative_path, msg, critical));
+                }
+                Err(error) => {
+                  let msg = format!("Failed to verify {}: {error}", relative_path);
+                  tracker.record_failure();
+                  return Err((relative_path, msg, critical));
+                }
               }
-              if let Err(e) = fs::write(&file_path, &write_data) {
+
+              if let Err(e) = atomic_write(&file_path, &write_data) {
                 let msg = format!("Failed to write {}: {}", file_path.display(), e);
                 log::warn!("{}", msg);
                 tracker.record_failure();
@@ -1464,14 +2079,19 @@ impl SyncEngine {
 
               {
                 let mut state = resume_state.lock().await;
-                state.completed_files.insert(relative_path.clone());
-                let count = save_counter.fetch_add(1, Ordering::Relaxed);
-                if count.is_multiple_of(50) {
+                state
+                  .completed_files
+                  .insert(relative_path.clone(), expected_hash.clone());
+                let count = save_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                if count.is_multiple_of(128) {
                   let _ = state.save(&profile_dir_clone);
                 }
               }
 
               return Ok(relative_path);
+            }
+            Err(SyncError::Cancelled) => {
+              return Err((relative_path, "cancelled".to_string(), false));
             }
             Err(e) => {
               last_err = format!("{}", e);
@@ -1502,6 +2122,7 @@ impl SyncEngine {
 
     let mut critical_failures = Vec::new();
     let mut non_critical_failures = Vec::new();
+    let mut task_failures = Vec::new();
 
     for handle in handles {
       match handle.await {
@@ -1510,6 +2131,7 @@ impl SyncEngine {
         Ok(Err((path, msg, false))) => non_critical_failures.push((path, msg)),
         Err(e) => {
           log::warn!("Download task panicked: {}", e);
+          task_failures.push(e.to_string());
         }
       }
     }
@@ -1522,22 +2144,192 @@ impl SyncEngine {
 
     tracker.emit_final();
 
-    if !non_critical_failures.is_empty() {
-      log::warn!(
-        "Download completed with {} non-critical failures for profile {}",
-        non_critical_failures.len(),
-        profile_id_owned
-      );
+    if cancel_flag.load(Ordering::Relaxed) {
+      return Err(SyncError::Cancelled);
     }
 
-    if !critical_failures.is_empty() {
-      let file_list: Vec<&str> = critical_failures.iter().map(|(p, _)| p.as_str()).collect();
+    if !critical_failures.is_empty()
+      || !non_critical_failures.is_empty()
+      || !task_failures.is_empty()
+    {
+      let file_list: Vec<&str> = critical_failures
+        .iter()
+        .chain(&non_critical_failures)
+        .map(|(path, _)| path.as_str())
+        .collect();
       return Err(SyncError::IoError(format!(
-        "Critical files failed to download: {}. Sync aborted to prevent data loss.",
-        file_list.join(", ")
+        "Profile download was incomplete (files: {}; tasks: {}). Manifest commit aborted.",
+        file_list.join(", "),
+        task_failures.len()
       )));
     }
 
+    Ok(())
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  async fn download_profile_files_bulk(
+    &self,
+    profile_id: &str,
+    profile_dir: &Path,
+    files: &[&ManifestFileEntry],
+    encryption_key: Option<&[u8; 32]>,
+    key_prefix: &str,
+    cancel_flag: &Arc<AtomicBool>,
+    capabilities: &SyncCapabilities,
+    resume_state: Arc<TokioMutex<SyncResumeState>>,
+    tracker: Arc<SyncProgressTracker>,
+  ) -> SyncResult<()> {
+    let max_items = capabilities.max_bundle_items.clamp(1, 512);
+    let max_bytes = capabilities
+      .max_bundle_bytes
+      .clamp(1, BULK_TRANSFER_MAX_BYTES);
+    let mut chunks: Vec<Vec<ManifestFileEntry>> = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0_u64;
+    for file in files {
+      if !current.is_empty()
+        && (current.len() >= max_items || current_bytes.saturating_add(file.size) > max_bytes)
+      {
+        chunks.push(std::mem::take(&mut current));
+        current_bytes = 0;
+      }
+      current.push((*file).clone());
+      current_bytes = current_bytes.saturating_add(file.size);
+    }
+    if !current.is_empty() {
+      chunks.push(current);
+    }
+
+    log::info!(
+      "Downloading {} files for profile {} in {} compressed bundle(s)",
+      files.len(),
+      profile_id,
+      chunks.len()
+    );
+    let semaphore = Arc::new(Semaphore::new(BULK_TRANSFER_CONCURRENCY));
+    let remote_prefix = format!("{}profiles/{}/files/", key_prefix, profile_id);
+    let mut handles = Vec::with_capacity(chunks.len());
+
+    for chunk in chunks {
+      let semaphore = semaphore.clone();
+      let client = self.client.clone();
+      let profile_dir = profile_dir.to_path_buf();
+      let remote_prefix = remote_prefix.clone();
+      let resume_state = resume_state.clone();
+      let tracker = tracker.clone();
+      let encryption_key = encryption_key.copied();
+      let cancel_flag = cancel_flag.clone();
+      handles.push(tokio::spawn(async move {
+        let file_count = chunk.len();
+        let result: SyncResult<()> = async {
+          let _permit = semaphore
+            .acquire_owned()
+            .await
+            .map_err(|error| SyncError::IoError(error.to_string()))?;
+          if cancel_flag.load(Ordering::Relaxed) {
+            return Err(SyncError::Cancelled);
+          }
+          let temporary_directory = tempfile::tempdir().map_err(|error| {
+            SyncError::IoError(format!("Failed to stage download bundle: {error}"))
+          })?;
+          let archive_path = temporary_directory.path().join("download.tar.gz");
+          let paths: Vec<String> = chunk.iter().map(|file| file.path.clone()).collect();
+
+          let mut last_error = None;
+          let mut completed = None;
+          for attempt in 0..MAX_FILE_RETRIES {
+            match await_sync_or_cancel(
+              cancel_flag.as_ref(),
+              client.download_bundle(&remote_prefix, &paths, &archive_path),
+            )
+            .await
+            {
+              Ok(()) => {
+                let extract_archive = archive_path.clone();
+                let extract_dir = profile_dir.clone();
+                let extract_files = chunk.clone();
+                match tokio::task::spawn_blocking(move || {
+                  extract_download_bundle(
+                    &extract_archive,
+                    &extract_dir,
+                    extract_files,
+                    encryption_key,
+                  )
+                })
+                .await
+                {
+                  Ok(Ok(files)) => {
+                    completed = Some(files);
+                    break;
+                  }
+                  Ok(Err(error)) => last_error = Some(error),
+                  Err(error) => {
+                    last_error = Some(SyncError::IoError(format!(
+                      "Bundle extractor failed: {error}"
+                    )))
+                  }
+                }
+              }
+              Err(SyncError::Cancelled) => return Err(SyncError::Cancelled),
+              Err(error) => last_error = Some(error),
+            }
+            if attempt + 1 < MAX_FILE_RETRIES {
+              tokio::time::sleep(std::time::Duration::from_millis(
+                250 * (u64::from(attempt) + 1),
+              ))
+              .await;
+            }
+          }
+          let completed = completed.ok_or_else(|| {
+            last_error.unwrap_or_else(|| {
+              SyncError::NetworkError("Bulk download failed without a response".to_string())
+            })
+          })?;
+          {
+            let mut state = resume_state.lock().await;
+            for file in &completed {
+              state
+                .completed_files
+                .insert(file.path.clone(), file.hash.clone());
+              tracker.record_success(file.size);
+            }
+            state.save(&profile_dir)?;
+          }
+          Ok(())
+        }
+        .await;
+        if result.is_err() {
+          for _ in 0..file_count {
+            tracker.record_failure();
+          }
+        }
+        result
+      }));
+    }
+
+    let mut failures = Vec::new();
+    for handle in handles {
+      match handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => failures.push(error.to_string()),
+        Err(error) => failures.push(format!("Bulk download task failed: {error}")),
+      }
+    }
+    {
+      let state = resume_state.lock().await;
+      state.save(profile_dir)?;
+    }
+    tracker.emit_final();
+    if cancel_flag.load(Ordering::Relaxed) {
+      return Err(SyncError::Cancelled);
+    }
+    if !failures.is_empty() {
+      return Err(SyncError::IoError(format!(
+        "Profile bulk download was incomplete: {}",
+        failures.join("; ")
+      )));
+    }
     Ok(())
   }
 
@@ -2614,8 +3406,15 @@ impl SyncEngine {
   ) -> SyncResult<Vec<String>> {
     log::info!("Checking for missing synced profiles...");
 
-    // List all personal profiles from S3 (paginated)
-    let all_objects = self.client.list_all("profiles/").await?;
+    // Local self-hosted servers expose a manifest-only profile index. It
+    // avoids recursively walking and serializing every profile file merely to
+    // discover the handful of profile IDs at startup.
+    let capabilities = self.client.capabilities().await;
+    let all_objects = if capabilities.profile_index {
+      self.client.list_profile_manifests("profiles/").await?
+    } else {
+      self.client.list_all("profiles/").await?
+    };
 
     let mut downloaded: Vec<String> = Vec::new();
 
@@ -2638,7 +3437,12 @@ impl SyncEngine {
       if let Some(team_id) = &auth.user.team_id {
         let team_prefix = format!("teams/{}/", team_id);
         let team_list_key = format!("{}profiles/", team_prefix);
-        if let Ok(team_objects) = self.client.list_all(&team_list_key).await {
+        let team_objects = if capabilities.profile_index {
+          self.client.list_profile_manifests(&team_list_key).await
+        } else {
+          self.client.list_all(&team_list_key).await
+        };
+        if let Ok(team_objects) = team_objects {
           for obj in team_objects {
             if obj.key.starts_with("profiles/") && obj.key.ends_with("/manifest.json") {
               if let Some(profile_id) = obj
@@ -3461,6 +4265,170 @@ pub async fn set_profile_sync_mode(
   Ok(())
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct EnableRegularSyncResult {
+  pub total: usize,
+  pub enabled: usize,
+  pub already_enabled: usize,
+  pub skipped_running: usize,
+  pub skipped_ephemeral: usize,
+  pub skipped_cross_os: usize,
+  pub failed: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RegularSyncEligibility {
+  Eligible,
+  AlreadyEnabled,
+  Running,
+  Ephemeral,
+  CrossOs,
+}
+
+fn regular_sync_eligibility(profile: &BrowserProfile) -> RegularSyncEligibility {
+  if profile.sync_mode != SyncMode::Disabled {
+    return RegularSyncEligibility::AlreadyEnabled;
+  }
+  if profile.process_id.is_some() {
+    return RegularSyncEligibility::Running;
+  }
+  if profile.ephemeral {
+    return RegularSyncEligibility::Ephemeral;
+  }
+  if profile.is_cross_os() {
+    return RegularSyncEligibility::CrossOs;
+  }
+  RegularSyncEligibility::Eligible
+}
+
+async fn require_sync_configuration(app_handle: &tauri::AppHandle) -> Result<(), String> {
+  SyncEngine::create_from_settings(app_handle)
+    .await
+    .map(|_| ())
+    .map_err(|_| serde_json::json!({ "code": "SYNC_NOT_CONFIGURED" }).to_string())
+}
+
+#[tauri::command]
+pub async fn set_regular_sync_default(
+  app_handle: tauri::AppHandle,
+  enabled: bool,
+) -> Result<SyncMode, String> {
+  if enabled {
+    require_sync_configuration(&app_handle).await?;
+  }
+
+  let mode = if enabled {
+    SyncMode::Regular
+  } else {
+    SyncMode::Disabled
+  };
+  SettingsManager::instance()
+    .save_default_profile_sync_mode(mode)
+    .map_err(|error| {
+      serde_json::json!({
+        "code": "INTERNAL_ERROR",
+        "params": { "detail": error.to_string() }
+      })
+      .to_string()
+    })?;
+  Ok(mode)
+}
+
+/// Enable Regular Sync for every eligible local profile and make it the
+/// default for future persistent profiles. Existing encrypted profiles stay
+/// encrypted; profiles that cannot be safely changed are reported as skipped.
+#[tauri::command]
+pub async fn enable_regular_sync_everywhere(
+  app_handle: tauri::AppHandle,
+) -> Result<EnableRegularSyncResult, String> {
+  require_sync_configuration(&app_handle).await?;
+
+  let profiles = ProfileManager::instance()
+    .list_profiles()
+    .map_err(|error| {
+      serde_json::json!({
+        "code": "INTERNAL_ERROR",
+        "params": { "detail": error.to_string() }
+      })
+      .to_string()
+    })?;
+  SettingsManager::instance()
+    .save_default_profile_sync_mode(SyncMode::Regular)
+    .map_err(|error| {
+      serde_json::json!({
+        "code": "INTERNAL_ERROR",
+        "params": { "detail": error.to_string() }
+      })
+      .to_string()
+    })?;
+
+  let mut result = EnableRegularSyncResult {
+    total: profiles.len(),
+    enabled: 0,
+    already_enabled: 0,
+    skipped_running: 0,
+    skipped_ephemeral: 0,
+    skipped_cross_os: 0,
+    failed: 0,
+  };
+
+  for profile in profiles {
+    match regular_sync_eligibility(&profile) {
+      RegularSyncEligibility::AlreadyEnabled => result.already_enabled += 1,
+      RegularSyncEligibility::Running => result.skipped_running += 1,
+      RegularSyncEligibility::Ephemeral => result.skipped_ephemeral += 1,
+      RegularSyncEligibility::CrossOs => result.skipped_cross_os += 1,
+      RegularSyncEligibility::Eligible => {
+        match set_profile_sync_mode(
+          app_handle.clone(),
+          profile.id.to_string(),
+          "Regular".to_string(),
+        )
+        .await
+        {
+          Ok(()) => result.enabled += 1,
+          Err(error) => {
+            result.failed += 1;
+            log::warn!(
+              "Failed to enable Regular Sync for profile {}: {}",
+              profile.id,
+              error
+            );
+          }
+        }
+      }
+    }
+  }
+
+  Ok(result)
+}
+
+pub async fn apply_default_profile_sync_mode(
+  app_handle: &tauri::AppHandle,
+  profile: &mut BrowserProfile,
+) {
+  if profile.ephemeral
+    || SettingsManager::instance().default_profile_sync_mode() != SyncMode::Regular
+  {
+    return;
+  }
+
+  match set_profile_sync_mode(
+    app_handle.clone(),
+    profile.id.to_string(),
+    "Regular".to_string(),
+  )
+  .await
+  {
+    Ok(()) => profile.sync_mode = SyncMode::Regular,
+    Err(error) => log::warn!(
+      "Could not apply the default sync mode to new profile {}: {}",
+      profile.id,
+      error
+    ),
+  }
+}
+
 #[tauri::command]
 pub async fn request_profile_sync(
   _app_handle: tauri::AppHandle,
@@ -3533,28 +4501,7 @@ pub async fn trigger_sync_for_profile(
   app_handle: tauri::AppHandle,
   profile_id: String,
 ) -> Result<(), String> {
-  let engine = SyncEngine::create_from_settings(&app_handle)
-    .await
-    .map_err(|e| format!("Failed to create sync engine: {e}"))?;
-
-  let profile_manager = ProfileManager::instance();
-  let profiles = profile_manager
-    .list_profiles()
-    .map_err(|e| format!("Failed to list profiles: {e}"))?;
-
-  let profile_uuid =
-    uuid::Uuid::parse_str(&profile_id).map_err(|_| format!("Invalid profile ID: {profile_id}"))?;
-  let profile = profiles
-    .into_iter()
-    .find(|p| p.id == profile_uuid)
-    .ok_or_else(|| format!("Profile with ID '{profile_id}' not found"))?;
-
-  engine
-    .sync_profile(&app_handle, &profile)
-    .await
-    .map_err(|e| format!("Sync failed: {e}"))?;
-
-  Ok(())
+  request_profile_sync(app_handle, profile_id).await
 }
 
 #[tauri::command]
@@ -4011,8 +4958,9 @@ pub async fn set_extension_group_sync_enabled(
 /// existing remote bytes are still in the prior state, so without this they'd
 /// remain plaintext (or worse, undecryptable) until the next per-entity edit.
 ///
-/// Order: profiles first (so the user can resume work as soon as profile sync
-/// completes), then proxies, groups, VPNs, extensions, extension groups.
+/// Order: profile re-syncs are queued first, then proxies, groups, VPNs,
+/// extensions, and extension groups. The scheduler applies profile locks and
+/// completes each profile transfer independently.
 /// Running profiles' associated entities are deferred by 5s so the active
 /// browser session isn't disrupted mid-keystroke.
 ///
@@ -4193,6 +5141,151 @@ mod tests {
   use super::*;
 
   #[test]
+  fn preempt_without_an_active_transfer_does_not_cancel_the_next_sync() {
+    let profile_id = uuid::Uuid::new_v4().to_string();
+
+    preempt_profile_sync(&profile_id);
+    let cancel_flag = register_sync_cancel(&profile_id);
+    let _cancel_guard = SyncCancelGuard(profile_id);
+
+    assert!(!cancel_flag.load(Ordering::SeqCst));
+  }
+
+  #[test]
+  fn preempt_cancels_an_active_transfer() {
+    let profile_id = uuid::Uuid::new_v4().to_string();
+    let cancel_flag = register_sync_cancel(&profile_id);
+    let _cancel_guard = SyncCancelGuard(profile_id.clone());
+
+    preempt_profile_sync(&profile_id);
+
+    assert!(cancel_flag.load(Ordering::SeqCst));
+  }
+
+  #[test]
+  fn regular_sync_bulk_action_preserves_encryption_and_skips_unsafe_profiles() {
+    let mut profile = BrowserProfile::default();
+    assert_eq!(
+      regular_sync_eligibility(&profile),
+      RegularSyncEligibility::Eligible
+    );
+
+    profile.sync_mode = SyncMode::Encrypted;
+    profile.process_id = Some(42);
+    assert_eq!(
+      regular_sync_eligibility(&profile),
+      RegularSyncEligibility::AlreadyEnabled
+    );
+
+    profile.sync_mode = SyncMode::Disabled;
+    assert_eq!(
+      regular_sync_eligibility(&profile),
+      RegularSyncEligibility::Running
+    );
+
+    profile.process_id = None;
+    profile.ephemeral = true;
+    assert_eq!(
+      regular_sync_eligibility(&profile),
+      RegularSyncEligibility::Ephemeral
+    );
+
+    profile.ephemeral = false;
+    profile.host_os = Some(if crate::profile::types::get_host_os() == "windows" {
+      "linux".to_string()
+    } else {
+      "windows".to_string()
+    });
+    assert_eq!(
+      regular_sync_eligibility(&profile),
+      RegularSyncEligibility::CrossOs
+    );
+  }
+
+  #[test]
+  fn compressed_bulk_transfer_round_trips_encrypted_profile_files() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let fixtures = [
+      ("Default/Cookies", b"cookie database".as_slice()),
+      ("Sessions/Tabs_1", b"restored tabs".as_slice()),
+    ];
+    let mut files = Vec::new();
+    for (path, data) in fixtures {
+      let full_path = source.path().join(path);
+      fs::create_dir_all(full_path.parent().unwrap()).unwrap();
+      fs::write(&full_path, data).unwrap();
+      files.push(ManifestFileEntry {
+        path: path.to_string(),
+        size: data.len() as u64,
+        mtime: 0,
+        hash: hash_manifest_bytes(path, data).unwrap(),
+      });
+    }
+
+    let key = [7_u8; 32];
+    let prepared = prepare_upload_bundle(source.path(), files.clone(), Some(key)).unwrap();
+    let completed = extract_download_bundle(
+      &prepared.archive_path,
+      destination.path(),
+      files.clone(),
+      Some(key),
+    )
+    .unwrap();
+    assert_eq!(completed, files);
+    for (path, data) in fixtures {
+      assert_eq!(fs::read(destination.path().join(path)).unwrap(), data);
+    }
+  }
+
+  #[test]
+  fn merge_profile_metadata_only_replaces_user_editable_fields() {
+    let mut local = BrowserProfile {
+      id: uuid::Uuid::new_v4(),
+      name: "Local".to_string(),
+      browser: "wayfern".to_string(),
+      version: "local-version".to_string(),
+      process_id: Some(42),
+      last_launch: Some(10),
+      updated_at: Some(5),
+      ..BrowserProfile::default()
+    };
+    local.tags = vec!["local".to_string()];
+    local.proxy_bypass_rules = vec!["localhost".to_string()];
+
+    let remote = BrowserProfile {
+      id: uuid::Uuid::new_v4(),
+      name: "Remote".to_string(),
+      browser: "untrusted-browser".to_string(),
+      version: "remote-version".to_string(),
+      process_id: None,
+      last_launch: None,
+      tags: vec!["remote".to_string()],
+      note: Some("remote note".to_string()),
+      launch_hook: Some("https://example.com".to_string()),
+      proxy_bypass_rules: vec!["example.com".to_string()],
+      dns_blocklist: Some("ads".to_string()),
+      updated_at: Some(20),
+      ..BrowserProfile::default()
+    };
+
+    let merged = SyncEngine::merge_profile_metadata(&local, &remote, 25);
+
+    assert_eq!(merged.id, local.id);
+    assert_eq!(merged.browser, local.browser);
+    assert_eq!(merged.version, local.version);
+    assert_eq!(merged.process_id, local.process_id);
+    assert_eq!(merged.last_launch, local.last_launch);
+    assert_eq!(merged.name, remote.name);
+    assert_eq!(merged.tags, remote.tags);
+    assert_eq!(merged.note, remote.note);
+    assert_eq!(merged.launch_hook, remote.launch_hook);
+    assert_eq!(merged.proxy_bypass_rules, remote.proxy_bypass_rules);
+    assert_eq!(merged.dns_blocklist, remote.dns_blocklist);
+    assert_eq!(merged.updated_at, Some(25));
+  }
+
+  #[test]
   fn test_is_safe_manifest_path() {
     // Legitimate profile-relative paths are accepted.
     assert!(is_safe_manifest_path("Local State"));
@@ -4249,7 +5342,7 @@ mod tests {
     assert!(wal_size > 0, "WAL file should be non-empty");
 
     // Run checkpoint
-    checkpoint_sqlite_wal_files(temp_dir.path());
+    checkpoint_sqlite_wal_files(temp_dir.path(), None);
 
     // After checkpoint, WAL should be truncated (empty)
     let wal_size_after = fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
@@ -4277,7 +5370,7 @@ mod tests {
     fs::write(&wal_path, b"fake wal data").unwrap();
 
     // Should not panic
-    checkpoint_sqlite_wal_files(temp_dir.path());
+    checkpoint_sqlite_wal_files(temp_dir.path(), None);
   }
 
   #[test]
@@ -4299,7 +5392,7 @@ mod tests {
     fs::write(&wal_path, b"").unwrap();
 
     // Should skip empty WAL without error
-    checkpoint_sqlite_wal_files(temp_dir.path());
+    checkpoint_sqlite_wal_files(temp_dir.path(), None);
   }
 
   #[test]
@@ -4334,7 +5427,7 @@ mod tests {
     assert!(wal_path.exists());
 
     // Checkpoint from the top-level directory
-    checkpoint_sqlite_wal_files(temp_dir.path());
+    checkpoint_sqlite_wal_files(temp_dir.path(), None);
 
     // Verify data is in the main database
     let conn = rusqlite::Connection::open(&db_path).unwrap();

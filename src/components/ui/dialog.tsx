@@ -97,16 +97,16 @@ type DialogOverlayProps = Omit<
 
 function DialogOverlay({
   className,
-  transition = { duration: 0.2, ease: "easeInOut" },
+  transition = { duration: 0.025, ease: "easeOut" },
   ...props
 }: DialogOverlayProps) {
   return (
     <DialogPrimitive.Overlay data-slot="dialog-overlay" asChild forceMount>
       <motion.div
         key="dialog-overlay"
-        initial={{ opacity: 0, filter: "blur(4px)" }}
-        animate={{ opacity: 1, filter: "blur(0px)" }}
-        exit={{ opacity: 0, filter: "blur(4px)" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
         transition={transition}
         className={cn("fixed inset-0 z-9999 bg-background/50", className)}
         {...props}
@@ -235,24 +235,21 @@ function DialogContent({
         <motion.div
           key="dialog-content"
           data-slot="dialog-content"
-          // Open/close motion modeled on transitions.dev's modal: a subtle
-          // scale from 0.96 → 1 with opacity, eased with cubic-bezier(0.22, 1,
-          // 0.36, 1). Open is 250ms; close is a quicker 150ms. The centering
-          // translate stays in `style` so `scale` animates around the center
-          // without fighting the transform-based positioning.
+          // Keep just enough scale and opacity motion to make the dialog feel
+          // anchored without delaying interaction.
           style={{ transformOrigin: "center" }}
-          initial={{ opacity: 0, scale: 0.96 }}
+          initial={{ opacity: 0, scale: 0.995 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{
             opacity: 0,
-            scale: 0.96,
+            scale: 0.995,
             transition: transition ?? {
-              duration: 0.15,
+              duration: 0.025,
               ease: [0.22, 1, 0.36, 1],
             },
           }}
           transition={
-            transition ?? { duration: 0.25, ease: [0.22, 1, 0.36, 1] }
+            transition ?? { duration: 0.035, ease: [0.22, 1, 0.36, 1] }
           }
           className={cn(
             // w-[calc(100%-2rem)] (not w-full + max-w) keeps the 1rem window

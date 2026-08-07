@@ -8,6 +8,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
+static ACTIVE_SUBSCRIPTION: std::sync::LazyLock<std::sync::Mutex<Option<Arc<AtomicBool>>>> =
+  std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubscribeEvent {
   #[serde(rename = "type")]
@@ -127,6 +130,12 @@ impl SyncSubscription {
     let client = self.client.clone();
     let mut token = self.token.clone();
 
+    if let Ok(mut active) = ACTIVE_SUBSCRIPTION.lock() {
+      if let Some(previous) = active.replace(running.clone()) {
+        previous.store(false, Ordering::SeqCst);
+      }
+    }
+
     tokio::spawn(async move {
       while running.load(Ordering::SeqCst) {
         match Self::connect_and_listen(&client, &base_url, &token, &work_tx, &running, &app_handle)
@@ -136,13 +145,13 @@ impl SyncSubscription {
             log::info!("SSE connection closed gracefully");
           }
           Err(e) => {
-            log::warn!("SSE connection error: {e}, reconnecting in 5s");
-            sleep(Duration::from_secs(5)).await;
+            log::warn!("SSE connection error: {e}, reconnecting shortly");
+            sleep(Duration::from_millis(300)).await;
           }
         }
 
         if running.load(Ordering::SeqCst) {
-          sleep(Duration::from_secs(1)).await;
+          sleep(Duration::from_millis(100)).await;
           // Refresh the sync token before reconnecting. The token may have
           // expired while the stream was open (tokens last ~15 min); reusing
           // the construction-time token otherwise produces an endless 401
@@ -160,6 +169,14 @@ impl SyncSubscription {
         }
       }
 
+      if let Ok(mut active) = ACTIVE_SUBSCRIPTION.lock() {
+        if active
+          .as_ref()
+          .is_some_and(|current| Arc::ptr_eq(current, &running))
+        {
+          active.take();
+        }
+      }
       log::info!("Sync subscription stopped");
     });
   }
@@ -195,6 +212,7 @@ impl SyncSubscription {
     let response = client
       .get(&url)
       .header("Authorization", format!("Bearer {token}"))
+      .header("X-Donut-Sync-Client", super::sync_client_id())
       .header("Accept", "text/event-stream")
       .send()
       .await
@@ -221,9 +239,9 @@ impl SyncSubscription {
           let chunk = String::from_utf8_lossy(&bytes);
           buffer.push_str(&chunk);
 
-          while let Some(event_end) = buffer.find("\n\n") {
+          while let Some((event_end, delimiter_len)) = Self::find_event_end(&buffer) {
             let event_str = buffer[..event_end].to_string();
-            buffer = buffer[event_end + 2..].to_string();
+            buffer = buffer[event_end + delimiter_len..].to_string();
 
             if let Some(event) = Self::parse_sse_event(&event_str) {
               Self::handle_event(&event, work_tx);
@@ -243,6 +261,16 @@ impl SyncSubscription {
     }
 
     Ok(())
+  }
+
+  fn find_event_end(buffer: &str) -> Option<(usize, usize)> {
+    match (buffer.find("\n\n"), buffer.find("\r\n\r\n")) {
+      (Some(lf), Some(crlf)) if lf <= crlf => Some((lf, 2)),
+      (Some(_), Some(crlf)) => Some((crlf, 4)),
+      (Some(lf), None) => Some((lf, 2)),
+      (None, Some(crlf)) => Some((crlf, 4)),
+      (None, None) => None,
+    }
   }
 
   fn parse_sse_event(event_str: &str) -> Option<SubscribeEvent> {

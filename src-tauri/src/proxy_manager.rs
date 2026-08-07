@@ -137,6 +137,13 @@ pub fn now_secs() -> u64 {
     .as_secs()
 }
 
+/// Hybrid logical edit timestamp. It remains unix-second compatible while
+/// guaranteeing that an edit made after a remote reconcile wins even when the
+/// local wall clock is behind or several edits happen in one second.
+pub fn next_updated_at(previous: Option<u64>) -> u64 {
+  now_secs().max(previous.unwrap_or(0).saturating_add(1))
+}
+
 impl StoredProxy {
   pub fn new(name: String, proxy_settings: ProxySettings) -> Self {
     let sync_enabled = crate::sync::is_sync_configured();
@@ -173,12 +180,12 @@ impl StoredProxy {
 
   pub fn update_settings(&mut self, proxy_settings: ProxySettings) {
     self.proxy_settings = proxy_settings;
-    self.updated_at = Some(now_secs());
+    self.updated_at = Some(next_updated_at(self.updated_at));
   }
 
   pub fn update_name(&mut self, name: String) {
     self.name = name;
-    self.updated_at = Some(now_secs());
+    self.updated_at = Some(next_updated_at(self.updated_at));
   }
 }
 
@@ -732,7 +739,7 @@ impl ProxyManager {
         &proxy.geo_isp,
       );
 
-      proxy.updated_at = Some(now_secs());
+      proxy.updated_at = Some(next_updated_at(proxy.updated_at));
       proxy.proxy_settings.username = Some(geo_username);
       proxy.proxy_settings.password = base_proxy.proxy_settings.password.clone();
       proxy.proxy_settings.host = base_proxy.proxy_settings.host.clone();
@@ -937,6 +944,21 @@ impl ProxyManager {
 
     if let Err(e) = self.delete_proxy_file(proxy_id) {
       log::warn!("Failed to delete proxy file: {e}");
+    }
+
+    // Unlink every profile that referenced this proxy so it falls back to
+    // direct. Best effort: the proxy deletion itself has already succeeded;
+    // a profile-unlink failure is logged (the profile simply keeps a stale
+    // reference that resolves to no proxy → direct on next launch).
+    match crate::profile::ProfileManager::instance().unlink_proxy_from_profiles(proxy_id) {
+      Ok(unlinked) if unlinked > 0 => {
+        log::info!("Unlinked {unlinked} profile(s) from deleted proxy {proxy_id}");
+        if let Err(e) = events::emit_empty("profiles-changed") {
+          log::error!("Failed to emit profiles-changed event: {e}");
+        }
+      }
+      Ok(_) => {}
+      Err(e) => log::warn!("Failed to unlink profiles from deleted proxy '{proxy_id}': {e}"),
     }
 
     // If sync was enabled, also delete from S3
@@ -1682,16 +1704,23 @@ impl ProxyManager {
     // Wait for the local proxy port to be ready to accept connections
     {
       use tokio::net::TcpStream;
-      use tokio::time::{sleep, Duration};
+      use tokio::time::{sleep, Duration, Instant};
       let mut ready = false;
-      for _ in 0..50 {
+      let started = Instant::now();
+      let deadline = started + Duration::from_secs(5);
+      while Instant::now() < deadline {
         match TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, proxy_info.local_port)).await {
           Ok(_stream) => {
             ready = true;
             break;
           }
           Err(_) => {
-            sleep(Duration::from_millis(100)).await;
+            let delay = if started.elapsed() < Duration::from_millis(750) {
+              Duration::from_millis(10)
+            } else {
+              Duration::from_millis(50)
+            };
+            sleep(delay).await;
           }
         }
       }
@@ -2260,6 +2289,12 @@ mod tests {
   use hyper::Response;
   use hyper_util::rt::TokioIo;
   use tokio::net::TcpListener;
+
+  #[test]
+  fn edit_timestamp_advances_past_a_future_remote_value() {
+    let future = now_secs() + 60;
+    assert_eq!(next_updated_at(Some(future)), future + 1);
+  }
 
   // Helper function to build donut-proxy binary for testing
   async fn ensure_donut_proxy_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {

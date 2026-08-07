@@ -67,10 +67,11 @@ use browser_runner::{
 };
 
 use profile::manager::{
-  check_browser_status, clone_profile, create_browser_profile_new, delete_profile,
-  list_browser_profiles, rename_profile, update_profile_dns_blocklist, update_profile_launch_hook,
-  update_profile_note, update_profile_proxy, update_profile_proxy_bypass_rules,
-  update_profile_tags, update_profile_vpn, update_profile_window_color, update_wayfern_config,
+  assign_profiles_network, check_browser_status, clone_profile, create_browser_profile_new,
+  delete_profile, list_browser_profiles, rename_profile, update_profile_dns_blocklist,
+  update_profile_launch_hook, update_profile_note, update_profile_proxy,
+  update_profile_proxy_bypass_rules, update_profile_tags, update_profile_vpn,
+  update_profile_window_color, update_wayfern_config,
 };
 
 use profile::password::{
@@ -95,16 +96,16 @@ use settings_manager::{
   complete_onboarding, dismiss_window_resize_warning, get_app_settings, get_onboarding_completed,
   get_sync_settings, get_system_info, get_system_language, get_table_sorting_settings,
   get_window_resize_warning_dismissed, open_log_directory, read_log_files, save_app_settings,
-  save_sync_settings, save_table_sorting_settings,
+  save_sync_device_identity, save_sync_settings, save_table_sorting_settings,
 };
 
 use sync::{
-  cancel_profile_sync, check_has_e2e_password, delete_e2e_password, enable_sync_for_all_entities,
-  get_unsynced_entity_counts, is_group_in_use_by_synced_profile, is_proxy_in_use_by_synced_profile,
+  cancel_profile_sync, check_has_e2e_password, delete_e2e_password, enable_regular_sync_everywhere,
+  enable_sync_for_all_entities, get_unsynced_entity_counts, is_group_in_use_by_synced_profile,
   is_vpn_in_use_by_synced_profile, request_profile_sync, rollover_encryption_for_all_entities,
   set_e2e_password, set_extension_group_sync_enabled, set_extension_sync_enabled,
-  set_group_sync_enabled, set_profile_sync_mode, set_proxy_sync_enabled, set_vpn_sync_enabled,
-  verify_e2e_password,
+  set_group_sync_enabled, set_profile_sync_mode, set_proxy_sync_enabled, set_regular_sync_default,
+  set_vpn_sync_enabled, verify_e2e_password,
 };
 
 use tag_manager::get_all_tags;
@@ -314,8 +315,63 @@ async fn check_proxy_validity(
 }
 
 #[tauri::command]
-fn get_cached_proxy_check(proxy_id: String) -> Option<crate::proxy_manager::ProxyCheckResult> {
-  crate::proxy_manager::PROXY_MANAGER.get_cached_proxy_check(&proxy_id)
+fn get_cached_proxy_checks(
+  proxy_ids: Vec<String>,
+) -> std::collections::HashMap<String, crate::proxy_manager::ProxyCheckResult> {
+  proxy_ids
+    .into_iter()
+    .filter_map(|proxy_id| {
+      crate::proxy_manager::PROXY_MANAGER
+        .get_cached_proxy_check(&proxy_id)
+        .map(|result| (proxy_id, result))
+    })
+    .collect()
+}
+
+#[derive(serde::Serialize)]
+struct ProxyManagementSnapshot {
+  cached_checks: std::collections::HashMap<String, crate::proxy_manager::ProxyCheckResult>,
+  usage: std::collections::HashMap<String, usize>,
+  synced_in_use: Vec<String>,
+}
+
+/// Load all proxy-list metadata through one IPC call and one profile scan.
+/// The old UI issued two sequential commands per proxy, including a complete
+/// profile-directory scan for every sync-lock lookup.
+#[tauri::command]
+fn get_proxy_management_snapshot(proxy_ids: Vec<String>) -> ProxyManagementSnapshot {
+  let requested: std::collections::HashSet<String> = proxy_ids.into_iter().collect();
+  let mut cached_checks = std::collections::HashMap::new();
+  for proxy_id in &requested {
+    if let Some(result) = crate::proxy_manager::PROXY_MANAGER.get_cached_proxy_check(proxy_id) {
+      cached_checks.insert(proxy_id.clone(), result);
+    }
+  }
+
+  let mut usage = std::collections::HashMap::new();
+  let mut synced_in_use = std::collections::HashSet::new();
+  if let Ok(profiles) = profile::manager::ProfileManager::instance().list_profiles() {
+    for profile in profiles {
+      let Some(proxy_id) = profile.proxy_id.as_ref() else {
+        continue;
+      };
+      if !requested.contains(proxy_id) {
+        continue;
+      }
+      *usage.entry(proxy_id.clone()).or_insert(0) += 1;
+      if profile.is_sync_enabled() {
+        synced_in_use.insert(proxy_id.clone());
+      }
+    }
+  }
+
+  let mut synced_in_use: Vec<String> = synced_in_use.into_iter().collect();
+  synced_in_use.sort();
+  ProxyManagementSnapshot {
+    cached_checks,
+    usage,
+    synced_in_use,
+  }
 }
 
 #[tauri::command]
@@ -1648,6 +1704,13 @@ pub fn run() {
         }
       }
 
+      // Older randomize-on-launch profiles have no ahead-of-time fingerprint
+      // yet. Warm the most recently used eligible profile while the user is
+      // arriving at the profile list, so its first launch on this build gets
+      // the same fast path as newly created and previously launched profiles.
+      crate::browser_runner::BrowserRunner::instance()
+        .prewarm_recent_random_fingerprint(app.handle().clone());
+
       // Kill orphaned proxy and VPN worker processes from previous app runs.
       // Since active_proxies is an in-memory map that starts empty, any running
       // donut-proxy workers on disk must be orphans the current app can't track.
@@ -1909,7 +1972,10 @@ pub fn run() {
         }
       });
 
-      // Periodically broadcast browser running status to the frontend.
+      // Recovery scan for browsers that outlive the Donut GUI or whose
+      // process waiter could not be armed. Normally, child-process exit is
+      // delivered immediately by WayfernManager; this slower scan is only a
+      // safety net and avoids continuous process-table churn.
       // When no profiles have stored PIDs (nothing was ever launched this
       // session), we use a long interval (30s) to avoid burning CPU on
       // full process-table scans via sysinfo. Once any profile is running
@@ -1979,7 +2045,6 @@ pub fn run() {
             .collect();
 
           for profile in profiles_to_check {
-            let had_pid = profile.process_id.is_some();
             // Check browser status and track changes
             match runner
               .check_browser_status(app_handle_status.clone(), &profile)
@@ -1992,14 +2057,10 @@ pub fn run() {
                   .copied()
                   .unwrap_or(false);
 
-                // Emit when the running state changed, or when we still had a
-                // stored PID but the browser is gone — the launch path sets the
-                // frontend to "running" immediately, and a missed transition
-                // here leaves the stop button stuck.
-                let should_emit =
-                  last_state != is_running || (!is_running && had_pid);
-
-                if should_emit {
+                // Natural exits are emitted and finalized inside
+                // check_browser_status via the shared exit handler. This loop
+                // only needs to announce a recovered running browser.
+                if is_running && !last_state {
                   log::debug!(
                     "Status checker detected change for profile {}: {} -> {}",
                     profile.name,
@@ -2028,44 +2089,12 @@ pub fn run() {
                     );
                   }
 
-                  // Re-encrypt password-protected profiles when the browser
-                  // exits naturally (user closing the window) — the explicit
-                  // kill path in browser_runner.rs handles app-driven stops.
-                  // Must run BEFORE `mark_profile_stopped` because that
-                  // releases any queued sync run, and a sync that picks up
-                  // the on-disk dir before re-encryption finishes uploads
-                  // the previous snapshot (issue: encrypted profiles not
-                  // syncing fresh data).
-                  if !is_running && profile.password_protected {
-                    crate::profile::password::complete_after_quit_and_wait(&profile)
-                      .await;
-                  }
-
-                  // Notify sync scheduler of running state changes
                   if let Some(scheduler) = sync::get_global_scheduler() {
-                    if is_running {
-                      scheduler.mark_profile_running(&profile_id).await;
-                    } else {
-                      // Sync was queued at launch; mark_profile_stopped triggers it
-                      scheduler.mark_profile_stopped(&profile_id).await;
-                    }
+                    scheduler.mark_profile_running(&profile_id).await;
                   }
-
-                  // Release the cloud team lock when the browser exits naturally
-                  // (window closed by the user). The explicit kill path in
-                  // browser_runner.rs already releases it, but this branch did
-                  // not — leaking the lock, which the 30s heartbeat then renews
-                  // indefinitely. No-op for non-sync/non-paid
-                  // profiles thanks to the guards inside the helper.
-                  if !is_running {
-                    crate::team_lock::release_team_lock_if_needed(&profile).await;
-                  }
-
-                  last_running_states.insert(profile_id, is_running);
-                } else {
-                  // Update the state even if unchanged to ensure we have it tracked
-                  last_running_states.insert(profile_id, is_running);
                 }
+
+                last_running_states.insert(profile_id, is_running);
               }
               Err(e) => {
                 log::warn!("Status check failed for profile {}: {}", profile.name, e);
@@ -2232,6 +2261,7 @@ pub fn run() {
       get_all_tags,
       get_browser_release_types,
       update_profile_proxy,
+      assign_profiles_network,
       update_profile_vpn,
       update_profile_tags,
       update_profile_note,
@@ -2278,7 +2308,8 @@ pub fn run() {
       update_stored_proxy,
       delete_stored_proxy,
       check_proxy_validity,
-      get_cached_proxy_check,
+      get_cached_proxy_checks,
+      get_proxy_management_snapshot,
       export_proxies,
       import_proxies_json,
       parse_txt_proxies,
@@ -2316,12 +2347,14 @@ pub fn run() {
       get_traffic_stats_for_period,
       get_sync_settings,
       save_sync_settings,
+      save_sync_device_identity,
+      set_regular_sync_default,
+      enable_regular_sync_everywhere,
       set_profile_sync_mode,
       cancel_profile_sync,
       request_profile_sync,
       set_proxy_sync_enabled,
       set_group_sync_enabled,
-      is_proxy_in_use_by_synced_profile,
       is_group_in_use_by_synced_profile,
       set_vpn_sync_enabled,
       is_vpn_in_use_by_synced_profile,

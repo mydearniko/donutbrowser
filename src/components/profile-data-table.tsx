@@ -5,7 +5,7 @@ import {
   flexRender,
   getCoreRowModel,
   getSortedRowModel,
-  type RowData,
+  type Row,
   type RowSelectionState,
   type SortingState,
   useReactTable,
@@ -22,24 +22,33 @@ import { FiWifi } from "react-icons/fi";
 import {
   LuCheck,
   LuChevronDown,
+  LuChevronRight,
   LuChevronUp,
   LuCookie,
+  LuEllipsis,
+  LuFolder,
+  LuFolderOpen,
   LuInfo,
   LuLock,
+  LuPencil,
   LuPlay,
+  LuPlus,
   LuPuzzle,
+  LuRefreshCw,
   LuSquare,
   LuTrash2,
   LuTriangleAlert,
   LuUsers,
 } from "react-icons/lu";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { DeleteGroupDialog } from "@/components/delete-group-dialog";
 import {
   ProfileBypassRulesDialog,
   ProfileDnsBlocklistDialog,
   ProfileInfoDialog,
   ProfileLaunchHookDialog,
 } from "@/components/profile-info-dialog";
+import { ProxyFormDialog } from "@/components/proxy-form-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -55,6 +64,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -62,7 +72,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { ProBadge } from "@/components/ui/pro-badge";
 import {
   Table,
   TableBody,
@@ -83,6 +92,7 @@ import { useScrollFade } from "@/hooks/use-scroll-fade";
 import { useTableSorting } from "@/hooks/use-table-sorting";
 import { useTeamLocks } from "@/hooks/use-team-locks";
 import { useVpnEvents } from "@/hooks/use-vpn-events";
+import { translateBackendError } from "@/lib/backend-errors";
 import {
   getBrowserDisplayName,
   getOSDisplayName,
@@ -90,10 +100,12 @@ import {
   isCrossOsProfile,
 } from "@/lib/browser-utils";
 import { formatRelativeTime } from "@/lib/flag-utils";
+import { showErrorToast, showSuccessToast } from "@/lib/toast-utils";
 import { cn } from "@/lib/utils";
 import type {
   BrowserProfile,
   ExtensionGroup,
+  GroupWithCount,
   LocationItem,
   ProxyCheckResult,
   StoredProxy,
@@ -113,13 +125,101 @@ import { TrafficDetailsDialog } from "./traffic-details-dialog";
 import { Input } from "./ui/input";
 import { RippleButton } from "./ui/ripple";
 
-declare module "@tanstack/react-table" {
-  interface ColumnMeta<TData extends RowData, TValue> {
-    // Emit no width for this column so table-fixed hands it all remaining
-    // space. Checking columnDef.size alone can't express this: TanStack
-    // resolves an unspecified size to its 150px default.
-    flexWidth?: boolean;
+const PROFILE_TABLE_FIXED_WIDTHS = {
+  select: 36,
+  actions: 48,
+  sync: 32,
+  settings: 44,
+} as const;
+
+const PROFILE_TABLE_FLEX_COLUMNS = {
+  name: { min: 168, weight: 3 },
+  proxy: { min: 144, weight: 2.2 },
+  tags: { min: 104, weight: 1.2 },
+  ext: { min: 104, weight: 1 },
+  dns: { min: 96, weight: 1 },
+  note: { min: 96, weight: 0.8 },
+} as const;
+
+type ProfileTableFlexColumnId = keyof typeof PROFILE_TABLE_FLEX_COLUMNS;
+
+const PROFILE_TABLE_FLEX_ENTRIES = Object.entries(
+  PROFILE_TABLE_FLEX_COLUMNS,
+) as Array<
+  [
+    ProfileTableFlexColumnId,
+    (typeof PROFILE_TABLE_FLEX_COLUMNS)[ProfileTableFlexColumnId],
+  ]
+>;
+
+const PROFILE_TABLE_OPTIONAL_COLUMNS = [
+  { id: "tags", reserve: 64 },
+  { id: "ext", reserve: 96 },
+  { id: "dns", reserve: 128 },
+  { id: "note", reserve: 160 },
+] as const;
+
+const PROFILE_TABLE_VISIBILITY_HYSTERESIS = 24;
+const PROFILE_TABLE_FIXED_WIDTH = Object.values(
+  PROFILE_TABLE_FIXED_WIDTHS,
+).reduce((total, width) => total + width, 0);
+
+function getProfileTableColumnVisibility(
+  containerWidth: number,
+  previous?: VisibilityState,
+): VisibilityState {
+  const visibility: VisibilityState = { created_at: false };
+  let minimumWidth =
+    PROFILE_TABLE_FIXED_WIDTH +
+    PROFILE_TABLE_FLEX_COLUMNS.name.min +
+    PROFILE_TABLE_FLEX_COLUMNS.proxy.min;
+
+  for (const column of PROFILE_TABLE_OPTIONAL_COLUMNS) {
+    minimumWidth += PROFILE_TABLE_FLEX_COLUMNS[column.id].min;
+    const showAt = minimumWidth + column.reserve;
+    const hideAt = showAt - PROFILE_TABLE_VISIBILITY_HYSTERESIS;
+    visibility[column.id] =
+      containerWidth >= (previous?.[column.id] ? hideAt : showAt);
   }
+
+  return visibility;
+}
+
+function getProfileTableColumnWidths(
+  containerWidth: number,
+  visibility: VisibilityState,
+): Record<string, number> {
+  const widths: Record<string, number> = { ...PROFILE_TABLE_FIXED_WIDTHS };
+  const visibleColumns = PROFILE_TABLE_FLEX_ENTRIES.filter(
+    ([id]) => visibility[id] !== false,
+  );
+  const minimumFlexibleWidth = visibleColumns.reduce(
+    (total, [, config]) => total + config.min,
+    0,
+  );
+  const totalWeight = visibleColumns.reduce(
+    (total, [, config]) => total + config.weight,
+    0,
+  );
+  const extraWidth = Math.max(
+    0,
+    containerWidth - PROFILE_TABLE_FIXED_WIDTH - minimumFlexibleWidth,
+  );
+
+  let assignedWidth = PROFILE_TABLE_FIXED_WIDTH;
+  for (const [id, config] of visibleColumns) {
+    const width = Math.floor(
+      config.min + (extraWidth * config.weight) / totalWeight,
+    );
+    widths[id] = width;
+    assignedWidth += width;
+  }
+
+  if (containerWidth > assignedWidth) {
+    widths.name += containerWidth - assignedWidth;
+  }
+
+  return widths;
 }
 
 // Stable table meta type to pass volatile state/handlers into TanStack Table without
@@ -165,6 +265,7 @@ interface TableMeta {
   ) => void | Promise<void>;
   checkingProfileId: string | null;
   proxyCheckResults: Record<string, ProxyCheckResult>;
+  onEditProxy: (proxy: StoredProxy) => void;
 
   // VPN selector state
   vpnConfigs: VpnConfig[];
@@ -222,8 +323,6 @@ interface TableMeta {
   syncStatuses: Record<string, { status: string; error?: string }>;
   onOpenProfileSyncDialog?: (profile: BrowserProfile) => void;
   onToggleProfileSync?: (profile: BrowserProfile) => void;
-  crossOsUnlocked?: boolean;
-  syncUnlocked?: boolean;
 
   // Country proxy creation (inline in proxy dropdown)
   countries: LocationItem[];
@@ -929,6 +1028,208 @@ const ProxyCellTrigger = React.memo<{
 
 ProxyCellTrigger.displayName = "ProxyCellTrigger";
 
+const PROFILE_PROXY_PICKER_LIMIT = 100;
+
+function matchesPickerQuery(query: string, values: Array<string | number>) {
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const searchable = values.join(" ").toLowerCase();
+  return tokens.every((token) => searchable.includes(token));
+}
+
+function ProfileProxyPicker({
+  profile,
+  meta,
+  effectiveProxyId,
+  effectiveVpnId,
+  effectiveProxy,
+  effectiveVpn,
+}: {
+  profile: BrowserProfile;
+  meta: TableMeta;
+  effectiveProxyId: string | null;
+  effectiveVpnId: string | null;
+  effectiveProxy: StoredProxy | null;
+  effectiveVpn: VpnConfig | null;
+}) {
+  const [query, setQuery] = React.useState("");
+  const matchingProxies = React.useMemo(
+    () =>
+      meta.storedProxies.filter((proxy) => {
+        if (proxy.is_cloud_managed || proxy.is_cloud_derived) return false;
+        const settings = proxy.proxy_settings;
+        return matchesPickerQuery(query, [
+          proxy.name,
+          settings.proxy_type,
+          settings.host,
+          settings.port,
+          settings.username ?? "",
+          proxy.geo_country ?? "",
+          proxy.geo_region ?? "",
+          proxy.geo_city ?? "",
+          proxy.geo_isp ?? "",
+        ]);
+      }),
+    [meta.storedProxies, query],
+  );
+  const matchingVpns = React.useMemo(
+    () =>
+      meta.vpnConfigs.filter((vpn) =>
+        matchesPickerQuery(query, [vpn.name, "vpn", "wireguard", "wg"]),
+      ),
+    [meta.vpnConfigs, query],
+  );
+  const visibleProxies = matchingProxies.slice(0, PROFILE_PROXY_PICKER_LIMIT);
+  const visibleVpns = matchingVpns.slice(0, PROFILE_PROXY_PICKER_LIMIT);
+  const totalMatches = matchingProxies.length + matchingVpns.length;
+  const shownMatches = visibleProxies.length + visibleVpns.length;
+
+  return (
+    <Command shouldFilter={false}>
+      <CommandInput
+        value={query}
+        onValueChange={setQuery}
+        placeholder={
+          meta.canCreateLocationProxy
+            ? meta.t("createProfile.proxy.searchWithCountries")
+            : meta.t("createProfile.proxy.search")
+        }
+        onFocus={() => {
+          if (meta.canCreateLocationProxy) void meta.loadCountries();
+        }}
+      />
+      <CommandList>
+        <CommandGroup>
+          {effectiveProxy && !effectiveVpn && (
+            <CommandItem
+              value="__edit_assigned_proxy__"
+              onSelect={() => {
+                meta.setOpenProxySelectorFor(null);
+                meta.onEditProxy(effectiveProxy);
+              }}
+            >
+              <LuPencil className="mr-2 size-4" />
+              <span className="min-w-0 truncate">
+                {meta.t("profileTable.editAssignedProxy", {
+                  name: effectiveProxy.name,
+                })}
+              </span>
+            </CommandItem>
+          )}
+          <CommandItem
+            value="__none__"
+            onSelect={() => void meta.handleProxySelection(profile.id, null)}
+          >
+            <LuCheck
+              className={cn(
+                "mr-2 size-4",
+                effectiveProxyId === null && effectiveVpnId === null
+                  ? "opacity-100"
+                  : "opacity-0",
+              )}
+            />
+            {meta.t("common.labels.none")}
+          </CommandItem>
+          {visibleProxies.map((proxy) => {
+            const settings = proxy.proxy_settings;
+            return (
+              <CommandItem
+                key={proxy.id}
+                value={proxy.id}
+                onSelect={() =>
+                  void meta.handleProxySelection(profile.id, proxy.id)
+                }
+              >
+                <LuCheck
+                  className={cn(
+                    "mr-2 size-4 shrink-0",
+                    effectiveProxyId === proxy.id && !effectiveVpn
+                      ? "opacity-100"
+                      : "opacity-0",
+                  )}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{proxy.name}</span>
+                  <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                    {settings.proxy_type.toUpperCase()} · {settings.host}:
+                    {settings.port}
+                  </span>
+                </span>
+              </CommandItem>
+            );
+          })}
+        </CommandGroup>
+        {visibleVpns.length > 0 && (
+          <CommandGroup heading={meta.t("profileTable.vpnsHeading")}>
+            {visibleVpns.map((vpn) => (
+              <CommandItem
+                key={vpn.id}
+                value={vpn.id}
+                onSelect={() =>
+                  void meta.handleVpnSelection(profile.id, vpn.id)
+                }
+              >
+                <LuCheck
+                  className={cn(
+                    "mr-2 size-4",
+                    effectiveVpnId === vpn.id ? "opacity-100" : "opacity-0",
+                  )}
+                />
+                <Badge
+                  variant="outline"
+                  className="mr-1 px-1 py-0 text-[10px] leading-tight"
+                >
+                  WG
+                </Badge>
+                <span className="truncate">{vpn.name}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+        {meta.canCreateLocationProxy && meta.countries.length > 0 && (
+          <CommandGroup heading={meta.t("profileTable.createByCountryHeading")}>
+            {meta.countries
+              .filter(
+                (country) =>
+                  matchesPickerQuery(query, [country.name, country.code]) &&
+                  !meta.storedProxies.some(
+                    (proxy) =>
+                      proxy.is_cloud_derived &&
+                      proxy.geo_country === country.code,
+                  ),
+              )
+              .slice(0, PROFILE_PROXY_PICKER_LIMIT)
+              .map((country) => (
+                <CommandItem
+                  key={`country-${country.code}`}
+                  value={`create-${country.code}`}
+                  onSelect={() =>
+                    void meta.handleCreateCountryProxy(profile.id, country)
+                  }
+                >
+                  <span className="mr-2 size-4" />+ {country.name}
+                </CommandItem>
+              ))}
+          </CommandGroup>
+        )}
+        {totalMatches === 0 && (
+          <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+            {meta.t("createProfile.proxy.notFound")}
+          </div>
+        )}
+        {shownMatches < totalMatches && (
+          <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+            {meta.t("profileTable.proxyPickerLimited", {
+              shown: shownMatches,
+              total: totalMatches,
+            })}
+          </div>
+        )}
+      </CommandList>
+    </Command>
+  );
+}
+
 const NoteCell = React.memo<{
   profile: BrowserProfile;
   isDisabled: boolean;
@@ -1122,6 +1423,8 @@ NoteCell.displayName = "NoteCell";
 
 interface ProfilesDataTableProps {
   profiles: BrowserProfile[];
+  allProfiles: BrowserProfile[];
+  groups: GroupWithCount[];
   onLaunchProfile: (profile: BrowserProfile) => void | Promise<void>;
   onKillProfile: (profile: BrowserProfile) => void | Promise<void>;
   onCloneProfile: (profile: BrowserProfile) => void | Promise<void>;
@@ -1134,7 +1437,14 @@ interface ProfilesDataTableProps {
   isUpdating: (browser: string) => boolean;
   onDeleteSelectedProfiles: (profileIds: string[]) => Promise<void>;
   onAssignProfilesToGroup: (profileIds: string[]) => void;
+  onAssignProfilesToProxy: (profileIds: string[]) => void;
+  onCopyCookiesToProfiles: (profileIds: string[]) => void;
+  onCreateProfileInGroup: (groupId: string | null) => void;
+  onGroupDeleted: (groupId: string) => void;
+  onRunProfiles: (profileIds: string[]) => void;
+  onStopProfiles: (profileIds: string[]) => void;
   selectedGroupId: string | null;
+  isFiltering?: boolean;
   selectedProfiles: string[];
   onSelectedProfilesChange: Dispatch<SetStateAction<string[]>>;
   onBulkDelete?: () => void;
@@ -1143,13 +1453,10 @@ interface ProfilesDataTableProps {
   onBulkCopyCookies?: () => void;
   onBulkRun?: () => void;
   onBulkStop?: () => void;
-  bulkActionsUnlocked?: boolean;
   onBulkExtensionGroupAssignment?: () => void;
   onAssignExtensionGroup?: (profileIds: string[]) => void;
   onOpenProfileSyncDialog?: (profile: BrowserProfile) => void;
   onToggleProfileSync?: (profile: BrowserProfile) => void;
-  crossOsUnlocked?: boolean;
-  syncUnlocked?: boolean;
   getProfileSyncInfo?: (profileId: string) =>
     | {
         session: SyncSessionInfo;
@@ -1170,8 +1477,30 @@ interface ProfilesDataTableProps {
   onInfoDialogProfileChange?: (profile: BrowserProfile | null) => void;
 }
 
+const COLLAPSED_PROFILE_GROUPS_KEY = "donut.profile-groups.collapsed";
+const UNGROUPED_PROFILE_GROUP_KEY = "__ungrouped__";
+
+interface ProfileFolderDisplayItem {
+  type: "folder";
+  key: string;
+  name: string;
+  group: GroupWithCount | null;
+  rows: Row<BrowserProfile>[];
+  profileIds: string[];
+}
+
+interface ProfileRowDisplayItem {
+  type: "profile";
+  key: string;
+  row: Row<BrowserProfile>;
+}
+
+type ProfileDisplayItem = ProfileFolderDisplayItem | ProfileRowDisplayItem;
+
 export function ProfilesDataTable({
   profiles,
+  allProfiles,
+  groups,
   onLaunchProfile,
   onKillProfile,
   onCloneProfile,
@@ -1183,6 +1512,14 @@ export function ProfilesDataTable({
   runningProfiles,
   isUpdating,
   onAssignProfilesToGroup,
+  onAssignProfilesToProxy,
+  onCopyCookiesToProfiles,
+  onCreateProfileInGroup,
+  onGroupDeleted,
+  onRunProfiles,
+  onStopProfiles,
+  selectedGroupId,
+  isFiltering = false,
   selectedProfiles,
   onSelectedProfilesChange,
   onBulkDelete,
@@ -1191,13 +1528,10 @@ export function ProfilesDataTable({
   onBulkCopyCookies,
   onBulkRun,
   onBulkStop,
-  bulkActionsUnlocked = false,
   onBulkExtensionGroupAssignment,
   onAssignExtensionGroup,
   onOpenProfileSyncDialog,
   onToggleProfileSync,
-  crossOsUnlocked = false,
-  syncUnlocked = false,
   getProfileSyncInfo,
   onLaunchWithSync,
   onSetPassword,
@@ -1319,6 +1653,22 @@ export function ProfilesDataTable({
     Record<string, string | null>
   >({});
   const [showCheckboxes, setShowCheckboxes] = React.useState(false);
+  const [collapsedGroupIds, setCollapsedGroupIds] = React.useState<Set<string>>(
+    new Set(),
+  );
+  const [collapsedGroupsLoaded, setCollapsedGroupsLoaded] =
+    React.useState(false);
+  const [renamingGroupId, setRenamingGroupId] = React.useState<string | null>(
+    null,
+  );
+  const [groupNameDraft, setGroupNameDraft] = React.useState("");
+  const [groupToDelete, setGroupToDelete] =
+    React.useState<GroupWithCount | null>(null);
+  const [togglingGroupSyncId, setTogglingGroupSyncId] = React.useState<
+    string | null
+  >(null);
+  const groupRenameSubmittingRef = React.useRef(false);
+  const groupRenameCancelingRef = React.useRef(false);
   const [tagsOverrides, setTagsOverrides] = React.useState<
     Record<string, string[]>
   >({});
@@ -1329,6 +1679,43 @@ export function ProfilesDataTable({
   const [openProxySelectorFor, setOpenProxySelectorFor] = React.useState<
     string | null
   >(null);
+  const [editingProxy, setEditingProxy] = React.useState<StoredProxy | null>(
+    null,
+  );
+
+  React.useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(COLLAPSED_PROFILE_GROUPS_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as unknown;
+        if (Array.isArray(parsed)) {
+          setCollapsedGroupIds(
+            new Set(
+              parsed.filter(
+                (value): value is string => typeof value === "string",
+              ),
+            ),
+          );
+        }
+      }
+    } catch (error) {
+      console.error("Failed to restore collapsed profile groups:", error);
+    } finally {
+      setCollapsedGroupsLoaded(true);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!collapsedGroupsLoaded) return;
+    try {
+      window.localStorage.setItem(
+        COLLAPSED_PROFILE_GROUPS_KEY,
+        JSON.stringify(Array.from(collapsedGroupIds)),
+      );
+    } catch (error) {
+      console.error("Failed to save collapsed profile groups:", error);
+    }
+  }, [collapsedGroupIds, collapsedGroupsLoaded]);
   const [checkingProfileId, setCheckingProfileId] = React.useState<
     string | null
   >(null);
@@ -1400,32 +1787,32 @@ export function ProfilesDataTable({
 
   // Load cached check results for proxies
   React.useEffect(() => {
-    const loadCachedResults = async () => {
-      const results: Record<string, ProxyCheckResult> = {};
-      const proxyIds = new Set<string>();
-      for (const profile of profiles) {
-        if (profile.proxy_id) {
-          proxyIds.add(profile.proxy_id);
-        }
-      }
-      for (const proxyId of proxyIds) {
-        try {
-          const cached = await invoke<ProxyCheckResult | null>(
-            "get_cached_proxy_check",
-            { proxyId },
-          );
-          if (cached) {
-            results[proxyId] = cached;
-          }
-        } catch (_error) {
-          // Ignore errors
-        }
-      }
-      setProxyCheckResults(results);
-    };
-    if (profiles.length > 0) {
-      void loadCachedResults();
+    let cancelled = false;
+    const proxyIds = Array.from(
+      new Set(
+        profiles
+          .map((profile) => profile.proxy_id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    );
+    if (proxyIds.length === 0) {
+      setProxyCheckResults({});
+      return;
     }
+
+    void invoke<Record<string, ProxyCheckResult>>("get_cached_proxy_checks", {
+      proxyIds,
+    })
+      .then((results) => {
+        if (!cancelled) setProxyCheckResults(results);
+      })
+      .catch((error: unknown) => {
+        console.error("Failed to load cached proxy checks:", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [profiles]);
 
   const loadAllTags = React.useCallback(async () => {
@@ -1737,6 +2124,70 @@ export function ProfilesDataTable({
     }
   }, [profileToRename, newProfileName, onRenameProfile, t]);
 
+  const beginGroupRename = React.useCallback((group: GroupWithCount) => {
+    groupRenameCancelingRef.current = false;
+    setRenamingGroupId(group.id);
+    setGroupNameDraft(group.name);
+  }, []);
+
+  const cancelGroupRename = React.useCallback(() => {
+    groupRenameCancelingRef.current = true;
+    setRenamingGroupId(null);
+    setGroupNameDraft("");
+  }, []);
+
+  const submitGroupRename = React.useCallback(
+    async (group: GroupWithCount) => {
+      const name = groupNameDraft.trim();
+      if (groupRenameCancelingRef.current) {
+        groupRenameCancelingRef.current = false;
+        return;
+      }
+      if (groupRenameSubmittingRef.current) return;
+      if (!name || name === group.name) {
+        cancelGroupRename();
+        return;
+      }
+
+      groupRenameSubmittingRef.current = true;
+      try {
+        await invoke("update_profile_group", {
+          groupId: group.id,
+          name,
+        });
+        showSuccessToast(t("groups.updateSuccess"));
+        cancelGroupRename();
+      } catch (error) {
+        showErrorToast(translateBackendError(t, error));
+      } finally {
+        groupRenameSubmittingRef.current = false;
+      }
+    },
+    [cancelGroupRename, groupNameDraft, t],
+  );
+
+  const toggleGroupSync = React.useCallback(
+    async (group: GroupWithCount) => {
+      if (togglingGroupSyncId) return;
+      const enabled = !group.sync_enabled;
+      setTogglingGroupSyncId(group.id);
+      try {
+        await invoke("set_group_sync_enabled", {
+          groupId: group.id,
+          enabled,
+        });
+        showSuccessToast(
+          t(enabled ? "groups.sync.enabled" : "groups.sync.disabled"),
+        );
+      } catch (error) {
+        showErrorToast(translateBackendError(t, error));
+      } finally {
+        setTogglingGroupSyncId(null);
+      }
+    },
+    [t, togglingGroupSyncId],
+  );
+
   // Cancel inline rename on outside click
   React.useEffect(() => {
     if (!profileToRename) return;
@@ -1876,6 +2327,34 @@ export function ProfilesDataTable({
     stoppingProfiles,
   ]);
 
+  const selectableProfileIds = React.useMemo(
+    () => new Set(selectableProfiles.map((profile) => profile.id)),
+    [selectableProfiles],
+  );
+
+  const handleToggleFolderSelection = React.useCallback(
+    (profileIds: string[], checked: boolean) => {
+      const next = new Set(selectedProfiles);
+      for (const profileId of profileIds) {
+        if (!selectableProfileIds.has(profileId)) continue;
+        if (checked) next.add(profileId);
+        else next.delete(profileId);
+      }
+      setShowCheckboxes(next.size > 0);
+      onSelectedProfilesChange(Array.from(next));
+    },
+    [onSelectedProfilesChange, selectableProfileIds, selectedProfiles],
+  );
+
+  const toggleFolder = React.useCallback((folderKey: string) => {
+    setCollapsedGroupIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(folderKey)) next.delete(folderKey);
+      else next.add(folderKey);
+      return next;
+    });
+  }, []);
+
   // Build table meta from volatile state so columns can stay stable
   const tableMeta = React.useMemo<TableMeta>(
     () => ({
@@ -1912,6 +2391,10 @@ export function ProfilesDataTable({
       handleProxySelection,
       checkingProfileId,
       proxyCheckResults,
+      onEditProxy: (proxy: StoredProxy) => {
+        setOpenProxySelectorFor(null);
+        setEditingProxy(proxy);
+      },
 
       // VPN selector state
       vpnConfigs,
@@ -1967,8 +2450,6 @@ export function ProfilesDataTable({
       syncStatuses,
       onOpenProfileSyncDialog,
       onToggleProfileSync,
-      crossOsUnlocked,
-      syncUnlocked,
 
       // Country proxy creation
       countries,
@@ -2036,8 +2517,6 @@ export function ProfilesDataTable({
       syncStatuses,
       onOpenProfileSyncDialog,
       onToggleProfileSync,
-      crossOsUnlocked,
-      syncUnlocked,
       countries,
       loadCountries,
       handleCreateCountryProxy,
@@ -2226,11 +2705,11 @@ export function ProfilesDataTable({
         },
         enableSorting: false,
         enableHiding: false,
-        size: 28,
+        size: PROFILE_TABLE_FIXED_WIDTHS.select,
       },
       {
         id: "actions",
-        size: 48,
+        size: PROFILE_TABLE_FIXED_WIDTHS.actions,
         cell: ({ row, table }) => {
           const meta = table.options.meta as TableMeta;
           const profile = row.original;
@@ -2239,11 +2718,8 @@ export function ProfilesDataTable({
           const isLaunching = meta.launchingProfiles.has(profile.id);
           const isStopping = meta.stoppingProfiles.has(profile.id);
           const isLockedByAnother = meta.isProfileLockedByAnother(profile.id);
-          const isSyncing = meta.syncStatuses[profile.id]?.status === "syncing";
           const canLaunch =
-            meta.browserState.canLaunchProfile(profile) &&
-            !isLockedByAnother &&
-            !isSyncing;
+            meta.browserState.canLaunchProfile(profile) && !isLockedByAnother;
           const lockEmail = meta.getProfileLockEmail(profile.id);
           const tooltipContent = isLockedByAnother
             ? meta.t("sync.team.cannotLaunchLocked", { email: lockEmail })
@@ -2401,9 +2877,7 @@ export function ProfilesDataTable({
       },
       {
         accessorKey: "name",
-        // The only column without a fixed width: table-fixed hands it all
-        // remaining space as the window grows or shrinks.
-        meta: { flexWidth: true },
+        size: PROFILE_TABLE_FLEX_COLUMNS.name.min,
         // The Name header doubles as the sort control: clicking opens a menu to
         // sort by name (A–Z / Z–A) or by creation date (newest / oldest), so
         // creation-date sorting needs no visible column.
@@ -2587,7 +3061,7 @@ export function ProfilesDataTable({
       },
       {
         id: "tags",
-        size: 100,
+        size: PROFILE_TABLE_FLEX_COLUMNS.tags.min,
         header: ({ table }) => {
           const meta = table.options.meta as TableMeta;
           return meta.t("profileTable.tagsHeader");
@@ -2620,7 +3094,7 @@ export function ProfilesDataTable({
       },
       {
         id: "note",
-        size: 80,
+        size: PROFILE_TABLE_FLEX_COLUMNS.note.min,
         header: ({ table }) => {
           const meta = table.options.meta as TableMeta;
           return meta.t("profileTable.noteHeader");
@@ -2651,7 +3125,7 @@ export function ProfilesDataTable({
       },
       {
         id: "proxy",
-        size: 110,
+        size: PROFILE_TABLE_FLEX_COLUMNS.proxy.min,
         header: ({ table }) => {
           const meta = table.options.meta as TableMeta;
           return meta.t("profiles.table.proxy");
@@ -2696,7 +3170,6 @@ export function ProfilesDataTable({
               : meta.t("profiles.table.notSelected");
           const vpnBadge = effectiveVpn ? "WG" : null;
           const isSelectorOpen = meta.openProxySelectorFor === profile.id;
-          const selectedId = effectiveVpnId ?? effectiveProxyId ?? null;
 
           // When profile is running, show bandwidth chart instead of proxy selector
           if (isRunning && meta.trafficSnapshots) {
@@ -2737,161 +3210,66 @@ export function ProfilesDataTable({
 
                 {!isDisabled && (
                   <PopoverContent
-                    className="w-[240px] p-0"
+                    className="w-[320px] p-0"
                     align="end"
                     sideOffset={8}
                   >
-                    <Command>
-                      <CommandInput
-                        placeholder={
-                          meta.canCreateLocationProxy
-                            ? t("createProfile.proxy.searchWithCountries")
-                            : t("createProfile.proxy.search")
-                        }
-                        onFocus={() => {
-                          if (meta.canCreateLocationProxy)
-                            void meta.loadCountries();
-                        }}
-                      />
-                      <CommandList>
-                        <CommandEmpty>
-                          {t("createProfile.proxy.notFound")}
-                        </CommandEmpty>
-                        <CommandGroup>
-                          <CommandItem
-                            value="__none__"
-                            onSelect={() =>
-                              void meta.handleProxySelection(profile.id, null)
-                            }
-                          >
-                            <LuCheck
-                              className={cn(
-                                "mr-2 size-4",
-                                selectedId === null
-                                  ? "opacity-100"
-                                  : "opacity-0",
-                              )}
-                            />
-                            {t("common.labels.none")}
-                          </CommandItem>
-                          {meta.storedProxies
-                            .filter(
-                              (proxy: StoredProxy) =>
-                                !proxy.is_cloud_managed &&
-                                !proxy.is_cloud_derived,
-                            )
-                            .map((proxy: StoredProxy) => (
-                              <CommandItem
-                                key={proxy.id}
-                                value={proxy.name}
-                                onSelect={() =>
-                                  void meta.handleProxySelection(
-                                    profile.id,
-                                    proxy.id,
-                                  )
-                                }
-                              >
-                                <LuCheck
-                                  className={cn(
-                                    "mr-2 size-4",
-                                    effectiveProxyId === proxy.id &&
-                                      !effectiveVpn
-                                      ? "opacity-100"
-                                      : "opacity-0",
-                                  )}
-                                />
-                                {proxy.name}
-                              </CommandItem>
-                            ))}
-                        </CommandGroup>
-                        {meta.vpnConfigs.length > 0 && (
-                          <CommandGroup heading={t("profileTable.vpnsHeading")}>
-                            {meta.vpnConfigs.map((vpn) => (
-                              <CommandItem
-                                key={vpn.id}
-                                value={`vpn-${vpn.name}`}
-                                onSelect={() =>
-                                  void meta.handleVpnSelection(
-                                    profile.id,
-                                    vpn.id,
-                                  )
-                                }
-                              >
-                                <LuCheck
-                                  className={cn(
-                                    "mr-2 size-4",
-                                    effectiveVpnId === vpn.id
-                                      ? "opacity-100"
-                                      : "opacity-0",
-                                  )}
-                                />
-                                <Badge
-                                  variant="outline"
-                                  className="mr-1 px-1 py-0 text-[10px] leading-tight"
-                                >
-                                  WG
-                                </Badge>
-                                {vpn.name}
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        )}
-                        {meta.canCreateLocationProxy &&
-                          meta.countries.length > 0 && (
-                            <CommandGroup
-                              heading={t("profileTable.createByCountryHeading")}
-                            >
-                              {meta.countries
-                                .filter(
-                                  (c) =>
-                                    !meta.storedProxies.some(
-                                      (p) =>
-                                        p.is_cloud_derived &&
-                                        p.geo_country === c.code,
-                                    ),
-                                )
-                                .map((country) => (
-                                  <CommandItem
-                                    key={`country-${country.code}`}
-                                    value={`create-${country.name}`}
-                                    onSelect={() =>
-                                      void meta.handleCreateCountryProxy(
-                                        profile.id,
-                                        country,
-                                      )
-                                    }
-                                  >
-                                    <span className="mr-2 size-4" />+{" "}
-                                    {country.name}
-                                  </CommandItem>
-                                ))}
-                            </CommandGroup>
-                          )}
-                      </CommandList>
-                    </Command>
+                    <ProfileProxyPicker
+                      profile={profile}
+                      meta={meta}
+                      effectiveProxyId={effectiveProxyId}
+                      effectiveVpnId={effectiveVpnId}
+                      effectiveProxy={effectiveProxy}
+                      effectiveVpn={effectiveVpn}
+                    />
                   </PopoverContent>
                 )}
               </Popover>
               {effectiveProxy && !effectiveVpn && !isDisabled && (
-                <ProxyCheckButton
-                  proxy={effectiveProxy}
-                  profileId={profile.id}
-                  checkingProfileId={meta.checkingProfileId}
-                  cachedResult={meta.proxyCheckResults[effectiveProxy.id]}
-                  setCheckingProfileId={setCheckingProfileId}
-                  onCheckComplete={(result) => {
-                    setProxyCheckResults((prev) => ({
-                      ...prev,
-                      [effectiveProxy.id]: result,
-                    }));
-                  }}
-                  onCheckFailed={(result) => {
-                    setProxyCheckResults((prev) => ({
-                      ...prev,
-                      [effectiveProxy.id]: result,
-                    }));
-                  }}
-                />
+                <div className="flex shrink-0 items-center">
+                  <ProxyCheckButton
+                    proxy={effectiveProxy}
+                    profileId={profile.id}
+                    checkingProfileId={meta.checkingProfileId}
+                    cachedResult={meta.proxyCheckResults[effectiveProxy.id]}
+                    setCheckingProfileId={setCheckingProfileId}
+                    onCheckComplete={(result) => {
+                      setProxyCheckResults((prev) => ({
+                        ...prev,
+                        [effectiveProxy.id]: result,
+                      }));
+                    }}
+                    onCheckFailed={(result) => {
+                      setProxyCheckResults((prev) => ({
+                        ...prev,
+                        [effectiveProxy.id]: result,
+                      }));
+                    }}
+                  />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7"
+                        onClick={() => {
+                          meta.onEditProxy(effectiveProxy);
+                        }}
+                        aria-label={meta.t("profileTable.editAssignedProxy", {
+                          name: effectiveProxy.name,
+                        })}
+                      >
+                        <LuPencil className="size-3" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {meta.t("profileTable.editAssignedProxy", {
+                        name: effectiveProxy.name,
+                      })}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
               )}
             </div>
           );
@@ -2899,7 +3277,7 @@ export function ProfilesDataTable({
       },
       {
         id: "ext",
-        size: 95,
+        size: PROFILE_TABLE_FLEX_COLUMNS.ext.min,
         header: ({ table }) => {
           const meta = table.options.meta as TableMeta;
           return meta.t("profiles.table.ext");
@@ -2912,7 +3290,7 @@ export function ProfilesDataTable({
       },
       {
         id: "dns",
-        size: 95,
+        size: PROFILE_TABLE_FLEX_COLUMNS.dns.min,
         header: ({ table }) => {
           const meta = table.options.meta as TableMeta;
           return meta.t("profiles.table.dns");
@@ -2926,7 +3304,7 @@ export function ProfilesDataTable({
       {
         id: "sync",
         header: "",
-        size: 28,
+        size: PROFILE_TABLE_FIXED_WIDTHS.sync,
         cell: ({ row, table }) => {
           const profile = row.original;
           const meta = table.options.meta as TableMeta;
@@ -2969,7 +3347,7 @@ export function ProfilesDataTable({
       },
       {
         id: "settings",
-        size: 32,
+        size: PROFILE_TABLE_FIXED_WIDTHS.settings,
         cell: ({ row, table }) => {
           const meta = table.options.meta as TableMeta;
           const profile = row.original;
@@ -2997,16 +3375,11 @@ export function ProfilesDataTable({
     [t, setProfileForInfoDialog],
   );
 
-  // Low-priority columns leave the table as the container narrows (most
-  // expendable first); their data stays reachable via the profile info
-  // dialog. Visibility (not CSS hiding) so table-fixed reclaims the width.
+  // Optional columns appear only when their minimum width plus breathing room
+  // is available. A small hysteresis keeps them from flickering at a resize
+  // boundary while their data remains available in profile info.
   const [columnVisibility, setColumnVisibility] =
-    React.useState<VisibilityState>({ created_at: false });
-
-  // Content columns grow proportionally with the container but never drop
-  // below the compact-layout floor; the name column takes the remainder.
-  // Computed in px from the observed container width because fixed table
-  // layout ignores max()/calc() column widths.
+    React.useState<VisibilityState>(() => getProfileTableColumnVisibility(0));
   const [containerWidth, setContainerWidth] = React.useState(0);
 
   const table = useReactTable({
@@ -3019,7 +3392,6 @@ export function ProfilesDataTable({
     },
     onSortingChange: handleSortingChange,
     onRowSelectionChange: handleRowSelectionChange,
-    onColumnVisibilityChange: setColumnVisibility,
     enableRowSelection: (row) => {
       const profile = row.original;
       const isRunning =
@@ -3035,41 +3407,122 @@ export function ProfilesDataTable({
   });
 
   const scrollParentRef = React.useRef<HTMLDivElement | null>(null);
-  const columnWidth = React.useCallback(
-    (id: string, sizePx: number) => {
-      const proportions: Record<string, { pct: number; floor: number }> = {
-        tags: { pct: 0.12, floor: 100 },
-        note: { pct: 0.1, floor: 80 },
-        proxy: { pct: 0.13, floor: 110 },
-        ext: { pct: 0.11, floor: 95 },
-        dns: { pct: 0.11, floor: 95 },
-      };
-      const p = proportions[id];
-      if (!p) return `${sizePx}px`;
-      return `${Math.max(p.floor, Math.round(containerWidth * p.pct))}px`;
-    },
-    [containerWidth],
+  const columnWidths = React.useMemo(
+    () => getProfileTableColumnWidths(containerWidth, columnVisibility),
+    [containerWidth, columnVisibility],
   );
   const sortedRows = table.getRowModel().rows;
+  const displayItems = React.useMemo<ProfileDisplayItem[]>(() => {
+    const rowsByGroup = new Map<string, Row<BrowserProfile>[]>();
+    const knownGroupIds = new Set(groups.map((group) => group.id));
+
+    for (const row of sortedRows) {
+      const profileGroupId = row.original.group_id;
+      const groupKey =
+        profileGroupId && knownGroupIds.has(profileGroupId)
+          ? profileGroupId
+          : UNGROUPED_PROFILE_GROUP_KEY;
+      const rows = rowsByGroup.get(groupKey) ?? [];
+      rows.push(row);
+      rowsByGroup.set(groupKey, rows);
+    }
+
+    const folders: ProfileFolderDisplayItem[] = [];
+    if (selectedGroupId && selectedGroupId !== "__all__") {
+      const isUngrouped = selectedGroupId === UNGROUPED_PROFILE_GROUP_KEY;
+      const group = isUngrouped
+        ? undefined
+        : groups.find((item) => item.id === selectedGroupId);
+      const rows = sortedRows;
+      if (!isFiltering || rows.length > 0) {
+        folders.push({
+          type: "folder",
+          key: selectedGroupId,
+          name: isUngrouped
+            ? t("groups.noGroup")
+            : (group?.name ?? t("groups.unknownGroup")),
+          group: group ?? null,
+          rows,
+          profileIds: allProfiles
+            .filter((profile) =>
+              isUngrouped
+                ? !profile.group_id || !knownGroupIds.has(profile.group_id)
+                : profile.group_id === selectedGroupId,
+            )
+            .map((profile) => profile.id),
+        });
+      }
+    } else {
+      for (const group of groups) {
+        const rows = rowsByGroup.get(group.id) ?? [];
+        if (!isFiltering || rows.length > 0) {
+          folders.push({
+            type: "folder",
+            key: group.id,
+            name: group.name,
+            group,
+            rows,
+            profileIds: allProfiles
+              .filter((profile) => profile.group_id === group.id)
+              .map((profile) => profile.id),
+          });
+        }
+      }
+
+      const ungroupedRows = rowsByGroup.get(UNGROUPED_PROFILE_GROUP_KEY) ?? [];
+      if (ungroupedRows.length > 0) {
+        folders.push({
+          type: "folder",
+          key: UNGROUPED_PROFILE_GROUP_KEY,
+          name: t("groups.noGroup"),
+          group: null,
+          rows: ungroupedRows,
+          profileIds: allProfiles
+            .filter(
+              (profile) =>
+                !profile.group_id || !knownGroupIds.has(profile.group_id),
+            )
+            .map((profile) => profile.id),
+        });
+      }
+    }
+
+    return folders.flatMap((folder) => {
+      const items: ProfileDisplayItem[] = [folder];
+      if (!collapsedGroupIds.has(folder.key)) {
+        items.push(
+          ...folder.rows.map(
+            (row): ProfileRowDisplayItem => ({
+              type: "profile",
+              key: row.id,
+              row,
+            }),
+          ),
+        );
+      }
+      return items;
+    });
+  }, [
+    collapsedGroupIds,
+    allProfiles,
+    groups,
+    isFiltering,
+    selectedGroupId,
+    sortedRows,
+    t,
+  ]);
   useScrollFade(scrollParentRef);
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const el = scrollParentRef.current;
     if (!el) return;
     const update = () => {
-      const w = el.clientWidth;
-      setContainerWidth(Math.round(w / 8) * 8);
-      setColumnVisibility((prev) => {
-        const next: VisibilityState = {
-          // Always hidden — sort-only column.
-          created_at: false,
-          dns: w >= 768,
-          ext: w >= 672,
-          note: w >= 576,
-          tags: w >= 512,
-        };
-        return Object.keys(next).every((k) => prev[k] === next[k])
-          ? prev
+      const width = el.clientWidth;
+      setContainerWidth((previous) => (previous === width ? previous : width));
+      setColumnVisibility((previous) => {
+        const next = getProfileTableColumnVisibility(width, previous);
+        return Object.keys(next).every((key) => previous[key] === next[key])
+          ? previous
           : next;
       });
     };
@@ -3081,14 +3534,18 @@ export function ProfilesDataTable({
     };
   }, []);
 
-  // Compact 36px row from the redesign spec; estimateSize must match the
-  // actual rendered row height or virtualizer placement drifts under scroll.
-  const ROW_HEIGHT = 36;
+  // Estimates must match the fixed folder/profile row heights or virtualizer
+  // placement drifts under scroll.
+  const PROFILE_ROW_HEIGHT = 36;
+  const FOLDER_ROW_HEIGHT = 40;
 
   const rowVirtualizer = useVirtualizer({
-    count: sortedRows.length,
+    count: displayItems.length,
     getScrollElement: () => scrollParentRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: (index) =>
+      displayItems[index]?.type === "folder"
+        ? FOLDER_ROW_HEIGHT
+        : PROFILE_ROW_HEIGHT,
     overscan: 8,
   });
 
@@ -3122,6 +3579,16 @@ export function ProfilesDataTable({
           }
         >
           <Table className="table-fixed" containerClassName="overflow-visible">
+            <colgroup>
+              {table.getVisibleLeafColumns().map((column) => (
+                <col
+                  key={column.id}
+                  style={{
+                    width: `${columnWidths[column.id] ?? column.getSize()}px`,
+                  }}
+                />
+              ))}
+            </colgroup>
             <TableHeader className="sticky top-0 z-10 overflow-visible bg-background [&_tr]:border-0">
               {table.getHeaderGroups().map((headerGroup) => (
                 <TableRow
@@ -3130,17 +3597,7 @@ export function ProfilesDataTable({
                 >
                   {headerGroup.headers.map((header) => {
                     return (
-                      <TableHead
-                        key={header.id}
-                        style={{
-                          width: header.column.columnDef.meta?.flexWidth
-                            ? undefined
-                            : columnWidth(
-                                header.column.id,
-                                header.column.getSize(),
-                              ),
-                        }}
-                      >
+                      <TableHead key={header.id}>
                         {header.isPlaceholder
                           ? null
                           : flexRender(
@@ -3154,7 +3611,7 @@ export function ProfilesDataTable({
               ))}
             </TableHeader>
             <TableBody className="overflow-visible">
-              {sortedRows.length === 0 ? (
+              {displayItems.length === 0 ? (
                 <TableRow>
                   <TableCell
                     colSpan={table.getVisibleLeafColumns().length}
@@ -3171,7 +3628,354 @@ export function ProfilesDataTable({
                     </tr>
                   )}
                   {virtualRows.map((virtualRow) => {
-                    const row = sortedRows[virtualRow.index];
+                    const item = displayItems[virtualRow.index];
+                    if (item.type === "folder") {
+                      const visibleProfileIds = item.rows.map(
+                        (row) => row.original.id,
+                      );
+                      const selectableFolderIds = visibleProfileIds.filter(
+                        (profileId) => selectableProfileIds.has(profileId),
+                      );
+                      const selectedFolderCount = selectableFolderIds.filter(
+                        (profileId) => selectedProfiles.includes(profileId),
+                      ).length;
+                      const folderSelectionState =
+                        selectableFolderIds.length > 0 &&
+                        selectedFolderCount === selectableFolderIds.length
+                          ? true
+                          : selectedFolderCount > 0
+                            ? "indeterminate"
+                            : false;
+                      const isCollapsed = collapsedGroupIds.has(item.key);
+                      const folderGroup = item.group;
+                      const isRenamingGroup =
+                        folderGroup?.id === renamingGroupId;
+                      const hasStoppedProfiles = item.profileIds.some(
+                        (profileId) => !runningProfiles.has(profileId),
+                      );
+                      const hasRunningProfiles = item.profileIds.some(
+                        (profileId) => runningProfiles.has(profileId),
+                      );
+
+                      return (
+                        <TableRow
+                          key={`folder-${item.key}`}
+                          style={{ height: `${FOLDER_ROW_HEIGHT}px` }}
+                          className="border-0! bg-muted/35 hover:bg-muted/55"
+                        >
+                          <TableCell
+                            colSpan={table.getVisibleLeafColumns().length}
+                            className="p-0"
+                          >
+                            <div className="flex h-10 items-center gap-2 px-2">
+                              <Checkbox
+                                checked={folderSelectionState}
+                                disabled={selectableFolderIds.length === 0}
+                                onCheckedChange={(checked) => {
+                                  handleToggleFolderSelection(
+                                    visibleProfileIds,
+                                    checked === true,
+                                  );
+                                }}
+                                aria-label={t("common.aria.selectAll")}
+                              />
+                              {isRenamingGroup && folderGroup ? (
+                                <div className="flex min-w-0 flex-1 items-center gap-2">
+                                  {isCollapsed ? (
+                                    <LuChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+                                  ) : (
+                                    <LuChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+                                  )}
+                                  {isCollapsed ? (
+                                    <LuFolder className="size-4 shrink-0 text-muted-foreground" />
+                                  ) : (
+                                    <LuFolderOpen className="size-4 shrink-0 text-muted-foreground" />
+                                  )}
+                                  <Input
+                                    autoFocus
+                                    value={groupNameDraft}
+                                    onChange={(event) => {
+                                      setGroupNameDraft(event.target.value);
+                                    }}
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter") {
+                                        event.preventDefault();
+                                        void submitGroupRename(folderGroup);
+                                      } else if (event.key === "Escape") {
+                                        event.preventDefault();
+                                        cancelGroupRename();
+                                      }
+                                    }}
+                                    onBlur={() => {
+                                      void submitGroupRename(folderGroup);
+                                    }}
+                                    aria-label={t("groups.form.name")}
+                                    className="h-7 min-w-24 flex-1 px-2 text-sm font-medium"
+                                  />
+                                  <Badge
+                                    variant="secondary"
+                                    className="h-5 min-w-5 shrink-0 justify-center px-1.5 text-[11px] font-normal"
+                                  >
+                                    {item.profileIds.length}
+                                  </Badge>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch text-left"
+                                  aria-expanded={!isCollapsed}
+                                  onClick={() => {
+                                    toggleFolder(item.key);
+                                  }}
+                                >
+                                  {isCollapsed ? (
+                                    <LuChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+                                  ) : (
+                                    <LuChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+                                  )}
+                                  {isCollapsed ? (
+                                    <LuFolder className="size-4 shrink-0 text-muted-foreground" />
+                                  ) : (
+                                    <LuFolderOpen className="size-4 shrink-0 text-muted-foreground" />
+                                  )}
+                                  <span className="truncate text-sm font-medium">
+                                    {item.name}
+                                  </span>
+                                  {folderGroup && (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span
+                                          className={cn(
+                                            "size-1.5 shrink-0 rounded-full",
+                                            folderGroup.sync_enabled
+                                              ? "bg-success"
+                                              : "bg-muted-foreground",
+                                          )}
+                                        />
+                                      </TooltipTrigger>
+                                      <TooltipContent>
+                                        {t(
+                                          folderGroup.sync_enabled
+                                            ? "groups.sync.enabled"
+                                            : "groups.sync.disabled",
+                                        )}
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  )}
+                                  <Badge
+                                    variant="secondary"
+                                    className="h-5 min-w-5 shrink-0 justify-center px-1.5 text-[11px] font-normal"
+                                  >
+                                    {item.profileIds.length}
+                                  </Badge>
+                                </button>
+                              )}
+
+                              {folderGroup && !isRenamingGroup && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      type="button"
+                                      size="icon"
+                                      variant="ghost"
+                                      className="size-7 shrink-0"
+                                      aria-label={t(
+                                        "groupManagement.editGroupTooltip",
+                                      )}
+                                      onClick={() => {
+                                        beginGroupRename(folderGroup);
+                                      }}
+                                    >
+                                      <LuPencil className="size-3.5" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    {t("groupManagement.editGroupTooltip")}
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
+
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    size="icon"
+                                    variant="ghost"
+                                    className="size-7 shrink-0"
+                                    aria-label={t(
+                                      "profiles.actionBar.runSelected",
+                                    )}
+                                    disabled={!hasStoppedProfiles}
+                                    onClick={() => {
+                                      onRunProfiles(item.profileIds);
+                                    }}
+                                  >
+                                    <LuPlay className="size-3.5 fill-current" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {t("profiles.actionBar.runSelected")}
+                                </TooltipContent>
+                              </Tooltip>
+
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    size="icon"
+                                    variant="ghost"
+                                    className="size-7 shrink-0"
+                                    aria-label={t(
+                                      "profiles.actionBar.stopSelected",
+                                    )}
+                                    disabled={!hasRunningProfiles}
+                                    onClick={() => {
+                                      onStopProfiles(item.profileIds);
+                                    }}
+                                  >
+                                    <LuSquare className="size-3.5 fill-current" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {t("profiles.actionBar.stopSelected")}
+                                </TooltipContent>
+                              </Tooltip>
+
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    size="icon"
+                                    variant="ghost"
+                                    className="size-7 shrink-0"
+                                    aria-label={t(
+                                      "profiles.actionBar.assignProxy",
+                                    )}
+                                    disabled={item.profileIds.length === 0}
+                                    onClick={() => {
+                                      onAssignProfilesToProxy(item.profileIds);
+                                    }}
+                                  >
+                                    <FiWifi className="size-3.5" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {t("profiles.actionBar.assignProxy")}
+                                </TooltipContent>
+                              </Tooltip>
+
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    size="icon"
+                                    variant="ghost"
+                                    className="size-7 shrink-0"
+                                  >
+                                    <LuEllipsis className="size-4" />
+                                    <span className="sr-only">
+                                      {t("common.labels.actions")}
+                                    </span>
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem
+                                    onSelect={() => {
+                                      onCreateProfileInGroup(
+                                        folderGroup?.id ?? null,
+                                      );
+                                    }}
+                                  >
+                                    <LuPlus />
+                                    {t("header.newProfile")}
+                                  </DropdownMenuItem>
+                                  {folderGroup && (
+                                    <>
+                                      <DropdownMenuItem
+                                        onSelect={() => {
+                                          beginGroupRename(folderGroup);
+                                        }}
+                                      >
+                                        <LuPencil />
+                                        {t("groups.edit")}
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem
+                                        disabled={
+                                          togglingGroupSyncId === folderGroup.id
+                                        }
+                                        onSelect={() => {
+                                          void toggleGroupSync(folderGroup);
+                                        }}
+                                      >
+                                        <LuRefreshCw
+                                          className={cn(
+                                            togglingGroupSyncId ===
+                                              folderGroup.id && "animate-spin",
+                                          )}
+                                        />
+                                        {t(
+                                          folderGroup.sync_enabled
+                                            ? "syncTooltips.disable"
+                                            : "syncTooltips.enable",
+                                        )}
+                                      </DropdownMenuItem>
+                                    </>
+                                  )}
+                                  <DropdownMenuSeparator />
+                                  {onAssignExtensionGroup && (
+                                    <DropdownMenuItem
+                                      disabled={item.profileIds.length === 0}
+                                      onSelect={() => {
+                                        onAssignExtensionGroup(item.profileIds);
+                                      }}
+                                    >
+                                      <LuPuzzle />
+                                      {t(
+                                        "profiles.actionBar.assignExtensionGroup",
+                                      )}
+                                    </DropdownMenuItem>
+                                  )}
+                                  <DropdownMenuItem
+                                    disabled={item.profileIds.length === 0}
+                                    onSelect={() => {
+                                      onAssignProfilesToGroup(item.profileIds);
+                                    }}
+                                  >
+                                    <LuUsers />
+                                    {t("profiles.actionBar.assignToGroup")}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    disabled={item.profileIds.length === 0}
+                                    onSelect={() => {
+                                      onCopyCookiesToProfiles(item.profileIds);
+                                    }}
+                                  >
+                                    <LuCookie />
+                                    {t("profiles.actionBar.copyCookies")}
+                                  </DropdownMenuItem>
+                                  {folderGroup && (
+                                    <>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem
+                                        className="text-destructive focus:text-destructive"
+                                        onSelect={() => {
+                                          setGroupToDelete(folderGroup);
+                                        }}
+                                      >
+                                        <LuTrash2 />
+                                        {t("groups.delete")}
+                                      </DropdownMenuItem>
+                                    </>
+                                  )}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    }
+
+                    const row = item.row;
                     const rowIsCrossOs = isCrossOsProfile(row.original);
                     const crossOsTitle = rowIsCrossOs
                       ? t("crossOs.viewOnly", {
@@ -3187,7 +3991,7 @@ export function ProfilesDataTable({
                         key={row.id}
                         data-state={row.getIsSelected() && "selected"}
                         title={crossOsTitle}
-                        style={{ height: `${ROW_HEIGHT}px` }}
+                        style={{ height: `${PROFILE_ROW_HEIGHT}px` }}
                         className={cn(
                           "overflow-visible border-0! hover:bg-accent/50",
                           rowIsCrossOs && "opacity-60",
@@ -3197,14 +4001,6 @@ export function ProfilesDataTable({
                           <TableCell
                             key={cell.id}
                             className="overflow-visible py-0"
-                            style={{
-                              width: cell.column.columnDef.meta?.flexWidth
-                                ? undefined
-                                : columnWidth(
-                                    cell.column.id,
-                                    cell.column.getSize(),
-                                  ),
-                            }}
                           >
                             {flexRender(
                               cell.column.columnDef.cell,
@@ -3238,6 +4034,24 @@ export function ProfilesDataTable({
         })}
         confirmButtonText={t("profiles.delete.confirmButton")}
         isLoading={isDeleting}
+      />
+      <DeleteGroupDialog
+        isOpen={groupToDelete !== null}
+        onClose={() => {
+          setGroupToDelete(null);
+        }}
+        group={groupToDelete}
+        onGroupDeleted={() => {
+          if (groupToDelete) onGroupDeleted(groupToDelete.id);
+          setGroupToDelete(null);
+        }}
+      />
+      <ProxyFormDialog
+        isOpen={editingProxy !== null}
+        onClose={() => {
+          setEditingProxy(null);
+        }}
+        editingProxy={editingProxy}
       />
       {profileForInfoDialog &&
         (() => {
@@ -3288,7 +4102,6 @@ export function ProfilesDataTable({
                 setProfileForInfoDialog(null);
                 setProfileToDelete(profile);
               }}
-              crossOsUnlocked={crossOsUnlocked}
               isRunning={infoIsRunning}
               isDisabled={infoIsDisabled}
               isCrossOs={infoIsCrossOs}
@@ -3299,42 +4112,22 @@ export function ProfilesDataTable({
       <DataTableActionBar table={table}>
         <DataTableActionBarSelection table={table} />
         {onBulkRun && (
-          <span className="relative inline-flex">
-            <DataTableActionBarAction
-              tooltip={
-                bulkActionsUnlocked
-                  ? t("profiles.actionBar.runSelected")
-                  : t("profiles.actionBar.proRequired")
-              }
-              onClick={bulkActionsUnlocked ? onBulkRun : undefined}
-              disabled={!bulkActionsUnlocked}
-              size="icon"
-            >
-              <LuPlay className="fill-current" />
-            </DataTableActionBarAction>
-            {!bulkActionsUnlocked && (
-              <ProBadge className="pointer-events-none absolute -top-2 -right-2" />
-            )}
-          </span>
+          <DataTableActionBarAction
+            tooltip={t("profiles.actionBar.runSelected")}
+            onClick={onBulkRun}
+            size="icon"
+          >
+            <LuPlay className="fill-current" />
+          </DataTableActionBarAction>
         )}
         {onBulkStop && (
-          <span className="relative inline-flex">
-            <DataTableActionBarAction
-              tooltip={
-                bulkActionsUnlocked
-                  ? t("profiles.actionBar.stopSelected")
-                  : t("profiles.actionBar.proRequired")
-              }
-              onClick={bulkActionsUnlocked ? onBulkStop : undefined}
-              disabled={!bulkActionsUnlocked}
-              size="icon"
-            >
-              <LuSquare className="fill-current" />
-            </DataTableActionBarAction>
-            {!bulkActionsUnlocked && (
-              <ProBadge className="pointer-events-none absolute -top-2 -right-2" />
-            )}
-          </span>
+          <DataTableActionBarAction
+            tooltip={t("profiles.actionBar.stopSelected")}
+            onClick={onBulkStop}
+            size="icon"
+          >
+            <LuSquare className="fill-current" />
+          </DataTableActionBarAction>
         )}
         {onBulkGroupAssignment && (
           <DataTableActionBarAction

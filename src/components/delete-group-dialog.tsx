@@ -57,9 +57,7 @@ export function DeleteGroupDialog({
       setAssociatedProfiles(groupProfiles);
     } catch (err) {
       console.error("Failed to load associated profiles:", err);
-      setError(
-        err instanceof Error ? err.message : t("groups.loadProfilesFailed"),
-      );
+      setError(translateBackendError(t, err));
     } finally {
       setIsLoading(false);
     }

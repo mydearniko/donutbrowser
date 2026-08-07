@@ -165,7 +165,6 @@
       "passwordSaved": "Mot de passe de chiffrement défini",
       "passwordMismatch": "Les mots de passe ne correspondent pas",
       "passwordTooShort": "Le mot de passe doit contenir au moins 8 caractères",
-      "requiresProOrOwner": "Le chiffrement des profils est disponible pour les utilisateurs Pro et les propriétaires d'équipe.",
       "validatePassword": "Valider",
       "validateDialog": {
         "title": "Valider le mot de passe de chiffrement",
@@ -173,7 +172,8 @@
         "submit": "Valider",
         "matchToast": "Le mot de passe est correct",
         "mismatchToast": "Le mot de passe ne correspond pas"
-      }
+      },
+      "teamOwnerRequired": "Seul le propriétaire de l’équipe peut gérer le chiffrement des profils."
     },
     "commercial": {
       "title": "Licence commerciale",
@@ -270,7 +270,6 @@
       "stopLeader": "Arrêter ce profil et tous ses suiveurs",
       "stopFollower": "Suit les actions de {{leaderName}}",
       "desyncedTooltip": "La synchronisation a échoué à {{url}}",
-      "paidFeature": "Le synchroniseur est une fonctionnalité payante",
       "wayfernOnly": "Seuls les profils Wayfern peuvent être synchronisés",
       "selectFollowers": "Sélectionner les profils suiveurs",
       "selectFollowersDesc": "Choisissez les profils qui reproduiront les actions du profil leader. Seuls les profils Wayfern arrêtés peuvent être sélectionnés.",
@@ -307,8 +306,7 @@
       "assignExtensionGroup": "Assigner un groupe d’extensions",
       "copyCookies": "Copier les cookies",
       "runSelected": "Lancer la sélection",
-      "stopSelected": "Arrêter la sélection",
-      "proRequired": "Plan Pro requis pour le lancement/arrêt groupé"
+      "stopSelected": "Arrêter la sélection"
     },
     "passwordProtectedBadge": "Protégé par mot de passe",
     "launchHook": {
@@ -381,7 +379,8 @@
       "description": "Chiffre les données du profil sur disque. Requis au lancement."
     },
     "downloadingSubtitle": "Téléchargement…",
-    "browsersDownloading": "Les navigateurs sont encore en cours de téléchargement. La création de profils sera disponible une fois un téléchargement terminé."
+    "browsersDownloading": "Les navigateurs sont encore en cours de téléchargement. La création de profils sera disponible une fois un téléchargement terminé.",
+    "moreOptions": "Plus d’options"
   },
   "deleteDialog": {
     "title": "Supprimer le profil",
@@ -406,8 +405,10 @@
       "disableSync": "Désactiver la sync",
       "editProxy": "Modifier le proxy",
       "deleteProxy": "Supprimer le proxy",
-      "cannotDelete_one": "Suppression impossible : utilisé par {{count}} profil",
-      "cannotDelete_other": "Suppression impossible : utilisé par {{count}} profils",
+      "deleteUnlinks_one": "Supprimer et basculer {{count}} profil en Direct",
+      "deleteUnlinks_other": "Supprimer et basculer {{count}} profils en Direct",
+      "deleteDescriptionWithUsage_one": "Cette action est irréversible. Cela supprimera définitivement le proxy \"{{name}}\" et basculera {{count}} profil en Direct.",
+      "deleteDescriptionWithUsage_other": "Cette action est irréversible. Cela supprimera définitivement le proxy \"{{name}}\" et basculera {{count}} profils en Direct.",
       "syncEnabled": "Sync activée",
       "syncDisabled": "Sync désactivée",
       "updateSyncFailed": "Échec de la mise à jour de la sync",
@@ -419,7 +420,31 @@
       "newVpn": "Nouveau VPN",
       "protocolCol": "Protocole",
       "hostPort": "Hôte : port",
-      "title": "Proxys et VPN"
+      "title": "Proxys et VPN",
+      "searchPlaceholder": "Rechercher par nom, hôte, IP ou lieu...",
+      "filterAll": "Tous les états",
+      "filterWorking": "Fonctionnels",
+      "filterFailed": "Échoués",
+      "filterUnchecked": "Non vérifiés",
+      "filterUsed": "Utilisés",
+      "filterUnused": "Inutilisés",
+      "protocolAll": "Tous les protocoles",
+      "filteredCount": "{{shown}} proxies sur {{total}}",
+      "workingCount": "{{count}} fonctionnels",
+      "failedCount": "{{count}} échoués",
+      "uncheckedCount": "{{count}} non vérifiés",
+      "usedCount": "{{count}} utilisés",
+      "noMatches": "Aucun proxy ne correspond à ces filtres.",
+      "resultRange": "{{start}}–{{end}} sur {{total}}",
+      "rowsPerPage": "Lignes par page",
+      "pageStatus": "Page {{page}} sur {{pages}}",
+      "previousPage": "Page précédente",
+      "nextPage": "Page suivante",
+      "bulkCheckResult": "{{count}} proxies vérifiés : {{working}} fonctionnels, {{failed}} échoués",
+      "checkSelected": "Vérifier les proxies sélectionnés",
+      "copySelected": "Copier les URL des proxies sélectionnés",
+      "copiedSelected": "{{count}} URL de proxy copiées",
+      "copyFailed": "Impossible de copier les URL de proxy"
     },
     "add": "Ajouter un proxy",
     "edit": "Modifier le proxy",
@@ -846,8 +871,7 @@
       "selectFile": "Choisir un Fichier",
       "preview": "{{count}} cookies trouvés",
       "success": "{{imported}} cookies importés avec succès ({{replaced}} remplacés)",
-      "error": "Échec de l'importation des cookies",
-      "proFeature": "L'importation de cookies est une fonctionnalité Pro"
+      "error": "Échec de l'importation des cookies"
     },
     "export": {
       "title": "Exporter les Cookies",
@@ -1053,7 +1077,6 @@
     "productSub": "Produit Sub",
     "brand": "Marque",
     "brandVersion": "Version de la marque",
-    "proFeature": "Ceci est une fonctionnalité Pro",
     "generateFingerprint": "Générer l'empreinte",
     "refreshFingerprint": "Actualiser l'empreinte",
     "canvasNoiseSeedPlaceholder": "Entrez une graine pour l'empreinte canvas",
@@ -1193,9 +1216,7 @@
       "cannotWhileRunning": "Arrêtez le profil avant de modifier son mot de passe."
     },
     "fingerprint": {
-      "notSupported": "L'édition des empreintes n'est disponible que pour les profils Wayfern.",
-      "lockedTitle": "Afficher et modifier l'empreinte est une fonctionnalité Pro",
-      "lockedDescription": "Les informations de votre appareil sont protégées dans chaque profil. Afficher et modifier l'empreinte d'un profil nécessite un forfait payant actif."
+      "notSupported": "L'édition des empreintes n'est disponible que pour les profils Wayfern."
     },
     "syncStatusValue": {
       "waiting": "En attente",
@@ -1212,7 +1233,6 @@
     "extensionsTab": "Extensions",
     "groupsTab": "Groupes",
     "managedNotice": "Les extensions gérées ici remplaceront toutes les extensions installées manuellement dans les profils lors du lancement.",
-    "proRequired": "La gestion des extensions est une fonctionnalité Pro",
     "empty": "Aucune extension téléchargée pour l'instant.",
     "noGroups": "Aucun groupe d'extensions créé pour l'instant.",
     "createGroup": "Créer un Groupe",
@@ -1270,14 +1290,6 @@
       "groupsDescription": "Supprimer {{count}} groupes d'extensions ? {{names}}",
       "confirmButton": "Supprimer"
     }
-  },
-  "pro": {
-    "badge": "PRO",
-    "fingerprintLocked": "La modification d'empreinte est une fonctionnalité Pro",
-    "cookieCopyLocked": "La copie de cookies est une fonctionnalité Pro",
-    "cookieImportLocked": "L'importation de cookies est une fonctionnalité Pro",
-    "cookieExportLocked": "L'exportation de cookies est une fonctionnalité Pro",
-    "cookieManagementLocked": "La gestion des cookies est une fonctionnalité Pro"
   },
   "dnsBlocklist": {
     "title": "Liste de blocage DNS",
@@ -1457,7 +1469,8 @@
     "noneOption": "Aucun",
     "noValidProfiles": "Aucun profil valide sélectionné.",
     "vpnGroupHeading": "VPN",
-    "failedFallback": "Échec de l'assignation du proxy/VPN aux profils"
+    "failedFallback": "Échec de l'assignation du proxy/VPN aux profils",
+    "limitedResults": "Affichage des {{shown}} premiers résultats sur {{total}}. Affinez la recherche."
   },
   "groupAssignment": {
     "title": "Assigner un groupe",
@@ -1647,7 +1660,9 @@
     "tagsHeader": "Étiquettes",
     "noteHeader": "Note",
     "vpnsHeading": "VPN",
-    "createByCountryHeading": "Créer par pays"
+    "createByCountryHeading": "Créer par pays",
+    "editAssignedProxy": "Modifier le proxy attribué : {{name}}",
+    "proxyPickerLimited": "Affichage des {{shown}} premiers résultats sur {{total}}. Affinez la recherche."
   },
   "dataTableActionBar": {
     "selected": "{{count}} sélectionné(s)",
@@ -1794,7 +1809,6 @@
     "cookieDbLocked": "Impossible de lire les cookies — la base de données est verrouillée. Fermez le navigateur et réessayez.",
     "cookieDbUnavailable": "Impossible de lire les cookies — le magasin de cookies est indisponible.",
     "selfHostedRequiresLogout": "Déconnectez-vous de votre compte Donut avant de configurer un serveur auto-hébergé.",
-    "fingerprintRequiresPro": "Afficher ou modifier l'empreinte nécessite un forfait payant actif. La protection est incluse dans tous les forfaits.",
     "proxyNotWorking": "Le proxy sélectionné ne fonctionne pas, le profil n'a donc pas été créé.",
     "proxyPaymentRequired": "Le proxy sélectionné requiert un paiement (402) — son abonnement a peut-être expiré — le profil n'a donc pas été créé.",
     "vpnNotWorking": "Le VPN sélectionné ne fonctionne pas, le profil n'a donc pas été créé.",
@@ -1802,7 +1816,11 @@
     "updateChecksumsUnavailable": "La mise à jour {{version}} n'a pas pu être vérifiée car son fichier de sommes de contrôle n'a pas pu être récupéré. La mise à jour n'a pas été installée ; une nouvelle tentative aura lieu plus tard.",
     "updateChecksumMismatch": "Le fichier de mise à jour téléchargé {{file}} a échoué à la vérification de la somme de contrôle et a été supprimé. Veuillez réessayer.",
     "nameCannotBeEmpty": "Le nom ne peut pas être vide",
-    "wayfernVersionNotAvailable": "La version {{requested}} de Wayfern n'est pas disponible au téléchargement. La version actuelle est {{current}}."
+    "wayfernVersionNotAvailable": "La version {{requested}} de Wayfern n'est pas disponible au téléchargement. La version actuelle est {{current}}.",
+    "syncDeviceIdInvalid": "L’ID de l’appareil doit contenir 3 à 128 caractères et uniquement des lettres, chiffres, points, tirets bas ou tirets.",
+    "syncDeviceNameInvalid": "Le nom de l’appareil doit contenir 1 à 80 caractères et ne peut pas contenir de caractères de contrôle.",
+    "syncDeviceIdBusy": "Fermez tous les profils synchronisés et attendez la fin des transferts actifs avant de modifier l’ID de l’appareil.",
+    "profileSyncPrepareFailed": "Impossible de préparer ce profil en toute sécurité à partir de la synchronisation. Vérifiez votre connexion et réessayez."
   },
   "rail": {
     "profiles": "Profils",
@@ -1882,11 +1900,32 @@
       "connectionStatus": "Connexion :",
       "statusUnknown": "Non testé",
       "testConnection": "Tester la connexion",
-      "disconnect": "Déconnecter"
+      "disconnect": "Déconnecter",
+      "syncDefaults": {
+        "title": "Synchronisation par défaut des profils",
+        "description": "Contrôlez comment les profils persistants rejoignent la synchronisation en temps réel.",
+        "newProfiles": "Synchronisation standard pour les nouveaux profils",
+        "newProfilesDescription": "Active automatiquement la synchronisation standard après la création, le clonage ou l’importation d’un profil.",
+        "enabledToast": "La synchronisation standard est désormais utilisée par défaut",
+        "disabledToast": "Les nouveaux profils commenceront avec la synchronisation désactivée",
+        "everywhereDescription": "Active la synchronisation standard pour chaque profil admissible. Les profils chiffrés restent chiffrés ; les profils ouverts, éphémères ou d’un autre système sont ignorés.",
+        "enableEverywhere": "Utiliser la synchronisation standard partout",
+        "applySuccess": "Synchronisation standard activée",
+        "applyPartial": "Certains profils n’ont pas été mis à jour",
+        "applyResult": "Activés : {{enabled}} ; déjà activés : {{alreadyEnabled}} ; ignorés : {{skipped}} ; échecs : {{failed}}.",
+        "requiresConnection": "Enregistrez une connexion de synchronisation avant de gérer les valeurs par défaut."
+      },
+      "deviceIdentity": {
+        "title": "Identité de l’appareil",
+        "description": "Identité stable utilisée pour les événements en temps réel et les verrous de profil.",
+        "name": "Nom de l’appareil",
+        "id": "ID de l’appareil",
+        "changeHint": "Conservez un ID unique par installation. Fermez les profils synchronisés et attendez la fin des transferts actifs avant de le modifier.",
+        "regenerate": "Générer un nouvel ID",
+        "saved": "Identité de l’appareil enregistrée"
+      }
     },
-    "deviceOrdinal": "{{ordinal}} sur {{count}}",
-    "automationPrimaryOnly": "L'automatisation du navigateur ne fonctionne que sur votre appareil principal (Appareil 1). Déconnectez-vous là-bas pour l'utiliser ici.",
-    "automationActiveHere": "L'automatisation du navigateur est active sur cet appareil."
+    "deviceOrdinal": "{{ordinal}} sur {{count}}"
   },
   "shortcutsPage": {
     "title": "Raccourcis clavier",
@@ -2006,10 +2045,6 @@
       "commercialDesc": "Gratuit pendant une évaluation de 2 semaines. Ensuite, un forfait payant permet de maintenir et de faire prospérer le projet."
     }
   },
-  "wayfernBlocked": {
-    "title": "Automatisation du navigateur en pause",
-    "description": "Votre compte a été temporairement privé des fonctionnalités Pro du navigateur, généralement à cause d'une connexion sur plusieurs appareils à la fois. Déconnectez-vous des autres appareils, puis relancez le profil pour la rétablir."
-  },
   "wayfernConfigDialog": {
     "titleView": "Voir les paramètres d'empreinte - {{name}} ({{browser}})",
     "titleConfigure": "Configurer les paramètres d'empreinte - {{name}} ({{browser}})",
@@ -2020,5 +2055,9 @@
   },
   "cookieCopy": {
     "noOtherTargets": "Aucun autre profil Wayfern sélectionné"
+  },
+  "wayfernTokenUnavailable": {
+    "title": "Jeton Wayfern indisponible",
+    "description": "Le jeton Wayfern hébergé n’a pas pu être actualisé. Les profils locaux et l’automatisation restent disponibles, mais les fonctions d’empreinte dépendant du jeton peuvent être limitées."
   }
 }

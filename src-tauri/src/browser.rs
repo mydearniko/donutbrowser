@@ -289,6 +289,7 @@ impl Browser for WayfernBrowser {
     let mut args = vec![
       format!("--user-data-dir={}", profile_path),
       "--no-default-browser-check".to_string(),
+      crate::wayfern_manager::RESTORE_LAST_SESSION_ARG.to_string(),
       "--disable-background-mode".to_string(),
       "--disable-component-update".to_string(),
       "--disable-background-timer-throttling".to_string(),
@@ -608,6 +609,19 @@ mod tests {
     assert!(
       json.get("executable_path").is_none(),
       "WayfernConfig should not have executable_path field"
+    );
+  }
+
+  #[test]
+  fn wayfern_launch_restores_the_profiles_previous_tabs() {
+    let args = WayfernBrowser::new()
+      .create_launch_args("/tmp/test-profile", None, None, None, false)
+      .expect("Wayfern launch arguments should be created");
+    assert!(
+      args
+        .iter()
+        .any(|arg| arg == crate::wayfern_manager::RESTORE_LAST_SESSION_ARG),
+      "persistent profiles must always launch with Chromium session restoration"
     );
   }
 

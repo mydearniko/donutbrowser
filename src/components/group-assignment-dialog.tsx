@@ -1,7 +1,7 @@
 "use client";
 
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GoPlus } from "react-icons/go";
 import { toast } from "sonner";
@@ -23,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { translateBackendError } from "@/lib/backend-errors";
 import type { BrowserProfile, ProfileGroup } from "@/types";
 import { RippleButton } from "./ui/ripple";
 
@@ -43,11 +44,18 @@ export function GroupAssignmentDialog({
 }: GroupAssignmentDialogProps) {
   const { t } = useTranslation();
   const [groups, setGroups] = useState<ProfileGroup[]>([]);
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<
+    string | null | undefined
+  >(undefined);
   const [isLoading, setIsLoading] = useState(false);
   const [isAssigning, setIsAssigning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const profilesById = useMemo(
+    () => new Map(profiles.map((profile) => [profile.id, profile])),
+    [profiles],
+  );
+  const initializedForOpenRef = useRef(false);
 
   const loadGroups = useCallback(async () => {
     setIsLoading(true);
@@ -57,15 +65,14 @@ export function GroupAssignmentDialog({
       setGroups(groupList);
     } catch (err) {
       console.error("Failed to load groups:", err);
-      setError(
-        err instanceof Error ? err.message : t("groupManagement.loadFailed"),
-      );
+      setError(translateBackendError(t, err));
     } finally {
       setIsLoading(false);
     }
   }, [t]);
 
   const handleAssign = useCallback(async () => {
+    if (selectedGroupId === undefined) return;
     setIsAssigning(true);
     setError(null);
     try {
@@ -89,10 +96,7 @@ export function GroupAssignmentDialog({
       onClose();
     } catch (err) {
       console.error("Failed to assign profiles to group:", err);
-      const errorMessage =
-        err instanceof Error
-          ? err.message
-          : t("groupAssignment.failedFallback");
+      const errorMessage = translateBackendError(t, err);
       setError(errorMessage);
       toast.error(errorMessage);
     } finally {
@@ -108,12 +112,27 @@ export function GroupAssignmentDialog({
   ]);
 
   useEffect(() => {
-    if (isOpen) {
-      void loadGroups();
-      setSelectedGroupId(null);
-      setError(null);
+    if (!isOpen) {
+      initializedForOpenRef.current = false;
+      return;
     }
-  }, [isOpen, loadGroups]);
+    if (initializedForOpenRef.current) return;
+    initializedForOpenRef.current = true;
+
+    void loadGroups();
+    const currentGroups = selectedProfiles
+      .map((profileId) => profilesById.get(profileId))
+      .filter((profile): profile is BrowserProfile => profile !== undefined)
+      .map((profile) => profile.group_id ?? null);
+    const firstGroup = currentGroups[0];
+    setSelectedGroupId(
+      currentGroups.length > 0 &&
+        currentGroups.every((groupId) => groupId === firstGroup)
+        ? firstGroup
+        : undefined,
+    );
+    setError(null);
+  }, [isOpen, loadGroups, profilesById, selectedProfiles]);
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -137,10 +156,7 @@ export function GroupAssignmentDialog({
             <div className="max-h-[min(8rem,20vh)] overflow-y-auto rounded-md bg-muted p-3">
               <ul className="space-y-1 text-sm">
                 {selectedProfiles.map((profileId) => {
-                  // Find the profile name for display
-                  const profile = profiles.find(
-                    (p: BrowserProfile) => p.id === profileId,
-                  );
+                  const profile = profilesById.get(profileId);
                   const displayName = profile ? profile.name : profileId;
                   return (
                     <li key={profileId} className="truncate">
@@ -175,7 +191,11 @@ export function GroupAssignmentDialog({
               </div>
             ) : (
               <Select
-                value={selectedGroupId ?? "__none__"}
+                value={
+                  selectedGroupId === undefined
+                    ? undefined
+                    : (selectedGroupId ?? "__none__")
+                }
                 onValueChange={(value) => {
                   setSelectedGroupId(value === "__none__" ? null : value);
                 }}
@@ -215,7 +235,7 @@ export function GroupAssignmentDialog({
           <LoadingButton
             isLoading={isAssigning}
             onClick={() => void handleAssign()}
-            disabled={isLoading}
+            disabled={isLoading || selectedGroupId === undefined}
           >
             {t("groupAssignment.assignButton")}
           </LoadingButton>

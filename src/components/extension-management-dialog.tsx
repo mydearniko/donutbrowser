@@ -51,7 +51,6 @@ import {
 import { FadingScrollArea } from "@/components/ui/fading-scroll-area";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ProBadge } from "@/components/ui/pro-badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
@@ -130,7 +129,6 @@ function getSyncStatusDot(
 interface ExtensionManagementDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  limitedMode: boolean;
   subPage?: boolean;
   /** Which tab is displayed when the dialog mounts; defaults to "extensions". */
   initialTab?: "extensions" | "groups";
@@ -139,7 +137,6 @@ interface ExtensionManagementDialogProps {
 export function ExtensionManagementDialog({
   isOpen,
   onClose,
-  limitedMode,
   subPage,
   initialTab = "extensions",
 }: ExtensionManagementDialogProps) {
@@ -220,7 +217,6 @@ export function ExtensionManagementDialog({
   );
 
   const loadData = useCallback(async () => {
-    if (limitedMode) return;
     setIsLoading(true);
     try {
       const [exts, groups] = await Promise.all([
@@ -230,13 +226,12 @@ export function ExtensionManagementDialog({
       setExtensions(exts);
       setExtensionGroups(groups);
     } catch {
-      // User may not have pro subscription
       setExtensions([]);
       setExtensionGroups([]);
     } finally {
       setIsLoading(false);
     }
-  }, [limitedMode]);
+  }, []);
 
   const loadIcons = useCallback(async (exts: Extension[]) => {
     const icons: Record<string, string> = {};
@@ -868,7 +863,6 @@ export function ExtensionManagementDialog({
     state: { sorting: extSorting, rowSelection: extRowSelection },
     onSortingChange: setExtSorting,
     onRowSelectionChange: setExtRowSelection,
-    enableRowSelection: () => !limitedMode,
     getSortedRowModel: getSortedRowModel(),
     getCoreRowModel: getCoreRowModel(),
     getRowId: (row) => row.id,
@@ -1092,7 +1086,6 @@ export function ExtensionManagementDialog({
     state: { sorting: groupSorting, rowSelection: groupRowSelection },
     onSortingChange: setGroupSorting,
     onRowSelectionChange: setGroupRowSelection,
-    enableRowSelection: () => !limitedMode,
     getSortedRowModel: getSortedRowModel(),
     getCoreRowModel: getCoreRowModel(),
     getRowId: (row) => row.id,
@@ -1107,7 +1100,6 @@ export function ExtensionManagementDialog({
               <DialogTitle className="flex items-center gap-2">
                 <LuPuzzle className="size-5" />
                 {t("extensions.title")}
-                {limitedMode && <ProBadge />}
               </DialogTitle>
               <DialogDescription>
                 {t("extensions.description")}
@@ -1116,24 +1108,6 @@ export function ExtensionManagementDialog({
           )}
 
           <div className="@container relative flex min-h-0 w-full flex-1 flex-col">
-            {limitedMode && (
-              <>
-                <div className="absolute inset-0 z-1 bg-background/30 backdrop-blur-[6px]" />
-                <div className="absolute inset-y-0 left-0 z-2 w-6 bg-linear-to-r from-background to-transparent" />
-                <div className="absolute inset-y-0 right-0 z-2 w-6 bg-linear-to-l from-background to-transparent" />
-                <div className="absolute inset-x-0 top-0 z-2 h-6 bg-linear-to-b from-background to-transparent" />
-                <div className="absolute inset-x-0 bottom-0 z-2 h-6 bg-linear-to-t from-background to-transparent" />
-                <div className="absolute inset-0 z-3 flex items-center justify-center">
-                  <div className="flex items-center gap-2 rounded-md bg-background/80 px-3 py-1.5">
-                    <ProBadge />
-                    <span className="text-sm font-medium text-muted-foreground">
-                      {t("extensions.proRequired")}
-                    </span>
-                  </div>
-                </div>
-              </>
-            )}
-
             <AnimatedTabs
               key={initialTab}
               value={activeTab}
@@ -1142,16 +1116,13 @@ export function ExtensionManagementDialog({
             >
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
                 <AnimatedTabsList>
-                  <AnimatedTabsTrigger
-                    value="extensions"
-                    disabled={limitedMode}
-                  >
+                  <AnimatedTabsTrigger value="extensions">
                     <span>{t("extensions.extensionsTab")}</span>
                     <span className="text-xs text-muted-foreground tabular-nums">
                       {extensions.length}
                     </span>
                   </AnimatedTabsTrigger>
-                  <AnimatedTabsTrigger value="groups" disabled={limitedMode}>
+                  <AnimatedTabsTrigger value="groups">
                     <span>{t("extensions.groupsTab")}</span>
                     <span className="text-xs text-muted-foreground tabular-nums">
                       {extensionGroups.length}
@@ -1165,7 +1136,6 @@ export function ExtensionManagementDialog({
                         <RippleButton
                           size="sm"
                           variant="outline"
-                          disabled={limitedMode}
                           onClick={() =>
                             document.getElementById("ext-file-input")?.click()
                           }
@@ -1185,7 +1155,6 @@ export function ExtensionManagementDialog({
                       <TooltipTrigger asChild>
                         <RippleButton
                           size="sm"
-                          disabled={limitedMode}
                           onClick={() => setShowCreateGroup(true)}
                           aria-label={t("extensions.newGroup")}
                         >
@@ -1219,7 +1188,6 @@ export function ExtensionManagementDialog({
                     accept=".xpi,.crx,.zip"
                     className="hidden"
                     onChange={handleFileSelect}
-                    disabled={limitedMode}
                   />
 
                   {/* Upload form */}

@@ -17,7 +17,8 @@ describe("AppController (e2e)", () => {
         {
           provide: SyncService,
           useValue: {
-            checkS3Connectivity: async () => true,
+            checkStorageConnectivity: async () => true,
+            getStorageDriver: () => "local",
           },
         },
       ],

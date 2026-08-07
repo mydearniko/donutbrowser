@@ -1,7 +1,7 @@
 "use client";
 
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { LoadingButton } from "@/components/loading-button";
@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { translateBackendError } from "@/lib/backend-errors";
 import type { BrowserProfile, ExtensionGroup } from "@/types";
 import { RippleButton } from "./ui/ripple";
 
@@ -41,10 +42,17 @@ export function ExtensionGroupAssignmentDialog({
 }: ExtensionGroupAssignmentDialogProps) {
   const { t } = useTranslation();
   const [groups, setGroups] = useState<ExtensionGroup[]>([]);
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<
+    string | null | undefined
+  >(undefined);
   const [isLoading, setIsLoading] = useState(false);
   const [isAssigning, setIsAssigning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const profilesById = useMemo(
+    () => new Map(profiles.map((profile) => [profile.id, profile])),
+    [profiles],
+  );
+  const initializedForOpenRef = useRef(false);
 
   const loadGroups = useCallback(async () => {
     setIsLoading(true);
@@ -54,15 +62,14 @@ export function ExtensionGroupAssignmentDialog({
       setGroups(groupList);
     } catch (err) {
       console.error("Failed to load extension groups:", err);
-      setError(
-        err instanceof Error ? err.message : t("extensions.loadGroupsFailed"),
-      );
+      setError(translateBackendError(t, err));
     } finally {
       setIsLoading(false);
     }
   }, [t]);
 
   const handleAssign = useCallback(async () => {
+    if (selectedGroupId === undefined) return;
     setIsAssigning(true);
     setError(null);
     try {
@@ -78,8 +85,7 @@ export function ExtensionGroupAssignmentDialog({
       onClose();
     } catch (err) {
       console.error("Failed to assign extension group:", err);
-      const errorMessage =
-        err instanceof Error ? err.message : t("extensions.assignGroupFailed");
+      const errorMessage = translateBackendError(t, err);
       setError(errorMessage);
       toast.error(errorMessage);
     } finally {
@@ -88,12 +94,27 @@ export function ExtensionGroupAssignmentDialog({
   }, [selectedProfiles, selectedGroupId, onAssignmentComplete, onClose, t]);
 
   useEffect(() => {
-    if (isOpen) {
-      void loadGroups();
-      setSelectedGroupId(null);
-      setError(null);
+    if (!isOpen) {
+      initializedForOpenRef.current = false;
+      return;
     }
-  }, [isOpen, loadGroups]);
+    if (initializedForOpenRef.current) return;
+    initializedForOpenRef.current = true;
+
+    void loadGroups();
+    const currentGroups = selectedProfiles
+      .map((profileId) => profilesById.get(profileId))
+      .filter((profile): profile is BrowserProfile => profile !== undefined)
+      .map((profile) => profile.extension_group_id ?? null);
+    const firstGroup = currentGroups[0];
+    setSelectedGroupId(
+      currentGroups.length > 0 &&
+        currentGroups.every((groupId) => groupId === firstGroup)
+        ? firstGroup
+        : undefined,
+    );
+    setError(null);
+  }, [isOpen, loadGroups, profilesById, selectedProfiles]);
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -113,9 +134,7 @@ export function ExtensionGroupAssignmentDialog({
             <div className="max-h-[min(8rem,20vh)] overflow-y-auto rounded-md bg-muted p-3">
               <ul className="space-y-1 text-sm">
                 {selectedProfiles.map((profileId) => {
-                  const profile = profiles.find(
-                    (p: BrowserProfile) => p.id === profileId,
-                  );
+                  const profile = profilesById.get(profileId);
                   const displayName = profile ? profile.name : profileId;
                   return (
                     <li key={profileId} className="truncate">
@@ -137,13 +156,17 @@ export function ExtensionGroupAssignmentDialog({
               </div>
             ) : (
               <Select
-                value={selectedGroupId ?? "none"}
+                value={
+                  selectedGroupId === undefined
+                    ? undefined
+                    : (selectedGroupId ?? "none")
+                }
                 onValueChange={(value) => {
                   setSelectedGroupId(value === "none" ? null : value);
                 }}
               >
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder={t("groupAssignment.placeholder")} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">
@@ -177,7 +200,7 @@ export function ExtensionGroupAssignmentDialog({
           <LoadingButton
             isLoading={isAssigning}
             onClick={() => void handleAssign()}
-            disabled={isLoading}
+            disabled={isLoading || selectedGroupId === undefined}
           >
             {t("common.buttons.apply")}
           </LoadingButton>

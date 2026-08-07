@@ -191,9 +191,7 @@ fn generate_tray_icons() {
     }
 
     let output_path = icons_dir.join(filename);
-    pixmap
-      .save_png(&output_path)
-      .expect("Failed to save tray icon PNG");
+    save_png_if_changed(&pixmap, &output_path);
   }
 
   // Generate a full-color icon for Windows tray (no template conversion)
@@ -208,8 +206,14 @@ fn generate_tray_icons() {
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     let output_path = icons_dir.join("tray-icon-win-44.png");
-    pixmap
-      .save_png(&output_path)
-      .expect("Failed to save Windows tray icon PNG");
+    save_png_if_changed(&pixmap, &output_path);
   }
+}
+
+fn save_png_if_changed(pixmap: &resvg::tiny_skia::Pixmap, output_path: &std::path::Path) {
+  let png = pixmap.encode_png().expect("Failed to encode tray icon PNG");
+  if std::fs::read(output_path).is_ok_and(|existing| existing == png) {
+    return;
+  }
+  std::fs::write(output_path, png).expect("Failed to save tray icon PNG");
 }

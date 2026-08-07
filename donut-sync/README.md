@@ -1,96 +1,67 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Donut Sync
 
+Donut Sync is the self-hosted profile synchronization service for Donut
+Browser. Its default backend is an atomic local object store under `DATA_DIR`;
+MinIO, S3, and external databases are not required.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Start with Docker Compose
 
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+From this directory:
 
 ```bash
-pnpm install
+cp .env.example .env
+openssl rand -hex 32
+# Put the generated value in .env as SYNC_TOKEN, then:
+docker compose up -d --build
 ```
 
-## Compile and run the project
+The only persistent state is mounted at `./data`. Back up that directory while
+the container is stopped, or use a filesystem snapshot tool that provides a
+consistent point-in-time snapshot.
+
+Verify both the process and storage:
 
 ```bash
-# development
-pnpm run start
-
-# watch mode
-pnpm run start:dev
-
-# production mode
-pnpm run start:prod
+curl http://127.0.0.1:12342/health
+curl http://127.0.0.1:12342/readyz
 ```
 
-## Run tests
+Then open **Account → Self-Hosted** in Donut Browser and enter the server URL
+and the same `SYNC_TOKEN` value.
 
-```bash
-# unit tests
-pnpm run test
+## Production exposure
 
-# e2e tests
-pnpm run test:e2e
+Keep `DONUT_SYNC_BIND=127.0.0.1` and put Caddy, Nginx, or another reverse proxy
+with TLS in front of the service. Set `PUBLIC_URL` if the proxy does not pass
+`X-Forwarded-Proto` and `X-Forwarded-Host` correctly. The bearer token grants
+full access to all synchronized data, so never expose it over plaintext HTTP.
 
-# test coverage
-pnpm run test:cov
-```
+## Storage layout and consistency
 
-## Deployment
+- Object bodies are stored below `DATA_DIR/objects`.
+- Metadata is stored separately below `DATA_DIR/.metadata`.
+- Uploads stream to `DATA_DIR/.tmp`, are fsynced, and are atomically renamed.
+- Realtime events are emitted only after the durable rename completes.
+- Profile file uploads are coalesced: peers react to the completed manifest,
+  not every intermediate file.
+- Donut verifies each file hash and atomically replaces downloads before the
+  manifest is committed. A last-synced baseline makes handoff direction immune
+  to clock skew between devices.
+- Renewable profile leases are persisted in `DATA_DIR/.profile-locks.json`.
+  Donut refreshes them every 10 seconds; an uncleanly stopped client releases
+  automatically after the 45-second lease expires.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+Donut reconciles a profile after acquiring its lease and before Chromium
+opens it. On close, the lease stays held until the final manifest is durable.
+Using one profile concurrently remains intentionally unsupported.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+The server remains single-writer per mounted data directory. Run one container
+against a given `data` directory; use Donut's profile locks to prevent people
+from opening the same browser profile concurrently.
 
-```bash
-pnpm install -g @nestjs/mau
-mau deploy
-```
+## Optional legacy S3 backend
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Set `STORAGE_DRIVER=s3` and provide `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`,
+`S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, and the usual optional S3 settings. This
+compatibility mode remains available, but the Compose deployment intentionally
+uses the faster local backend.

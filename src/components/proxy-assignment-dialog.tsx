@@ -1,8 +1,14 @@
 "use client";
 
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useId, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { LuCheck, LuChevronsUpDown } from "react-icons/lu";
 import { toast } from "sonner";
@@ -11,7 +17,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Command,
-  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
@@ -31,9 +36,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { translateBackendError } from "@/lib/backend-errors";
 import { cn } from "@/lib/utils";
 import type { BrowserProfile, StoredProxy, VpnConfig } from "@/types";
 import { RippleButton } from "./ui/ripple";
+
+const ASSIGNMENT_PICKER_LIMIT = 100;
 
 interface ProxyAssignmentDialogProps {
   isOpen: boolean;
@@ -57,12 +65,60 @@ export function ProxyAssignmentDialog({
   const { t } = useTranslation();
   const proxyListboxId = useId();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectionType, setSelectionType] = useState<"none" | "proxy" | "vpn">(
-    "none",
-  );
+  const [selectionType, setSelectionType] = useState<
+    "unselected" | "none" | "proxy" | "vpn"
+  >("unselected");
   const [isAssigning, setIsAssigning] = useState(false);
   const [proxyPopoverOpen, setProxyPopoverOpen] = useState(false);
+  const [proxyQuery, setProxyQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const profilesById = useMemo(
+    () => new Map(profiles.map((profile) => [profile.id, profile])),
+    [profiles],
+  );
+  const initializedForOpenRef = useRef(false);
+
+  const queryTokens = useMemo(
+    () => proxyQuery.trim().toLowerCase().split(/\s+/).filter(Boolean),
+    [proxyQuery],
+  );
+  const matchesQuery = useCallback(
+    (values: Array<string | number>) => {
+      if (queryTokens.length === 0) return true;
+      const searchable = values.join(" ").toLowerCase();
+      return queryTokens.every((token) => searchable.includes(token));
+    },
+    [queryTokens],
+  );
+  const matchingProxies = useMemo(
+    () =>
+      storedProxies.filter((proxy) => {
+        if (proxy.is_cloud_managed || proxy.is_cloud_derived) return false;
+        const settings = proxy.proxy_settings;
+        return matchesQuery([
+          proxy.name,
+          settings.proxy_type,
+          settings.host,
+          settings.port,
+          settings.username ?? "",
+          proxy.geo_country ?? "",
+          proxy.geo_region ?? "",
+          proxy.geo_city ?? "",
+        ]);
+      }),
+    [matchesQuery, storedProxies],
+  );
+  const matchingVpns = useMemo(
+    () =>
+      vpnConfigs.filter((vpn) =>
+        matchesQuery([vpn.name, "vpn", "wireguard", "wg"]),
+      ),
+    [matchesQuery, vpnConfigs],
+  );
+  const visibleProxies = matchingProxies.slice(0, ASSIGNMENT_PICKER_LIMIT);
+  const visibleVpns = matchingVpns.slice(0, ASSIGNMENT_PICKER_LIMIT);
+  const totalMatches = matchingProxies.length + matchingVpns.length;
+  const shownMatches = visibleProxies.length + visibleVpns.length;
 
   const handleValueChange = useCallback((value: string) => {
     if (value === "none") {
@@ -78,13 +134,13 @@ export function ProxyAssignmentDialog({
   }, []);
 
   const handleAssign = useCallback(async () => {
+    if (selectionType === "unselected") return;
     setIsAssigning(true);
     setError(null);
     try {
-      const validProfiles = selectedProfiles.filter((profileId) => {
-        const profile = profiles.find((p) => p.id === profileId);
-        return profile;
-      });
+      const validProfiles = selectedProfiles.filter((profileId) =>
+        profilesById.has(profileId),
+      );
 
       if (validProfiles.length === 0) {
         setError(t("proxyAssignment.noValidProfiles"));
@@ -92,29 +148,21 @@ export function ProxyAssignmentDialog({
         return;
       }
 
-      for (const profileId of validProfiles) {
-        if (selectionType === "vpn") {
-          await invoke("update_profile_vpn", {
-            profileId,
-            vpnId: selectedId,
-          });
-        } else {
-          await invoke("update_profile_proxy", {
-            profileId,
-            proxyId: selectionType === "proxy" ? selectedId : null,
-          });
-        }
-      }
-
-      await emit("profile-updated");
+      const assignedCount = await invoke<number>("assign_profiles_network", {
+        profileIds: validProfiles,
+        proxyId: selectionType === "proxy" ? selectedId : null,
+        vpnId: selectionType === "vpn" ? selectedId : null,
+      });
+      toast.success(
+        t("proxyAssignment.success", {
+          count: assignedCount,
+        }),
+      );
       onAssignmentComplete();
       onClose();
     } catch (err) {
       console.error("Failed to assign proxy/VPN to profiles:", err);
-      const errorMessage =
-        err instanceof Error
-          ? err.message
-          : t("proxyAssignment.failedFallback");
+      const errorMessage = translateBackendError(t, err);
       setError(errorMessage);
       toast.error(errorMessage);
     } finally {
@@ -124,19 +172,51 @@ export function ProxyAssignmentDialog({
     selectedProfiles,
     selectedId,
     selectionType,
-    profiles,
+    profilesById,
     onAssignmentComplete,
     onClose,
     t,
   ]);
 
   useEffect(() => {
-    if (isOpen) {
-      setSelectedId(null);
-      setSelectionType("none");
-      setError(null);
+    if (!isOpen) {
+      initializedForOpenRef.current = false;
+      return;
     }
-  }, [isOpen]);
+    if (initializedForOpenRef.current) return;
+    initializedForOpenRef.current = true;
+
+    setSelectedId(null);
+    const currentNetworks = selectedProfiles
+      .map((profileId) => profilesById.get(profileId))
+      .filter((profile): profile is BrowserProfile => profile !== undefined)
+      .map((profile) =>
+        profile.proxy_id
+          ? `proxy:${profile.proxy_id}`
+          : profile.vpn_id
+            ? `vpn:${profile.vpn_id}`
+            : "none",
+      );
+    const firstNetwork = currentNetworks[0];
+    if (
+      currentNetworks.length > 0 &&
+      currentNetworks.every((network) => network === firstNetwork)
+    ) {
+      if (firstNetwork?.startsWith("proxy:")) {
+        setSelectedId(firstNetwork.slice(6));
+        setSelectionType("proxy");
+      } else if (firstNetwork?.startsWith("vpn:")) {
+        setSelectedId(firstNetwork.slice(4));
+        setSelectionType("vpn");
+      } else {
+        setSelectionType("none");
+      }
+    } else {
+      setSelectionType("unselected");
+    }
+    setProxyQuery("");
+    setError(null);
+  }, [isOpen, profilesById, selectedProfiles]);
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -160,9 +240,7 @@ export function ProxyAssignmentDialog({
             <div className="max-h-[min(8rem,20vh)] overflow-y-auto rounded-md bg-muted p-3">
               <ul className="space-y-1 text-sm">
                 {selectedProfiles.map((profileId) => {
-                  const profile = profiles.find(
-                    (p: BrowserProfile) => p.id === profileId,
-                  );
+                  const profile = profilesById.get(profileId);
                   const displayName = profile ? profile.name : profileId;
                   return (
                     <li key={profileId} className="truncate">
@@ -188,6 +266,8 @@ export function ProxyAssignmentDialog({
                   className="w-full justify-between font-normal"
                 >
                   {(() => {
+                    if (selectionType === "unselected")
+                      return t("proxyAssignment.placeholder");
                     if (selectionType === "none")
                       return t("proxyAssignment.noneOption");
                     if (selectionType === "vpn") {
@@ -209,12 +289,13 @@ export function ProxyAssignmentDialog({
                 className="w-(--radix-popover-trigger-width) p-0"
                 sideOffset={8}
               >
-                <Command>
+                <Command shouldFilter={false}>
                   <CommandInput
+                    value={proxyQuery}
+                    onValueChange={setProxyQuery}
                     placeholder={t("proxyAssignment.searchPlaceholder")}
                   />
                   <CommandList>
-                    <CommandEmpty>{t("proxyAssignment.notFound")}</CommandEmpty>
                     <CommandGroup>
                       <CommandItem
                         value="__none__"
@@ -233,12 +314,9 @@ export function ProxyAssignmentDialog({
                         />
                         {t("proxyAssignment.noneOption")}
                       </CommandItem>
-                      {storedProxies
-                        .filter(
-                          (proxy) =>
-                            !proxy.is_cloud_managed && !proxy.is_cloud_derived,
-                        )
-                        .map((proxy) => (
+                      {visibleProxies.map((proxy) => {
+                        const settings = proxy.proxy_settings;
+                        return (
                           <CommandItem
                             key={proxy.id}
                             value={proxy.name}
@@ -249,22 +327,31 @@ export function ProxyAssignmentDialog({
                           >
                             <LuCheck
                               className={cn(
-                                "mr-2 size-4",
+                                "mr-2 size-4 shrink-0",
                                 selectionType === "proxy" &&
                                   selectedId === proxy.id
                                   ? "opacity-100"
                                   : "opacity-0",
                               )}
                             />
-                            {proxy.name}
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate">
+                                {proxy.name}
+                              </span>
+                              <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                                {settings.proxy_type.toUpperCase()} ·{" "}
+                                {settings.host}:{settings.port}
+                              </span>
+                            </span>
                           </CommandItem>
-                        ))}
+                        );
+                      })}
                     </CommandGroup>
-                    {vpnConfigs.length > 0 && (
+                    {visibleVpns.length > 0 && (
                       <CommandGroup
                         heading={t("proxyAssignment.vpnGroupHeading")}
                       >
-                        {vpnConfigs.map((vpn) => (
+                        {visibleVpns.map((vpn) => (
                           <CommandItem
                             key={vpn.id}
                             value={`vpn-${vpn.name}`}
@@ -292,6 +379,19 @@ export function ProxyAssignmentDialog({
                         ))}
                       </CommandGroup>
                     )}
+                    {totalMatches === 0 && (
+                      <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+                        {t("proxyAssignment.notFound")}
+                      </div>
+                    )}
+                    {shownMatches < totalMatches && (
+                      <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+                        {t("proxyAssignment.limitedResults", {
+                          shown: shownMatches,
+                          total: totalMatches,
+                        })}
+                      </div>
+                    )}
                   </CommandList>
                 </Command>
               </PopoverContent>
@@ -316,6 +416,7 @@ export function ProxyAssignmentDialog({
           <LoadingButton
             isLoading={isAssigning}
             onClick={() => void handleAssign()}
+            disabled={selectionType === "unselected"}
           >
             {t("proxyAssignment.assignButton")}
           </LoadingButton>
