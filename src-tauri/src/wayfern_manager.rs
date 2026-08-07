@@ -322,6 +322,27 @@ impl WayfernManager {
     )
   }
 
+  /// Scale a logical (CSS px) placement to physical screen pixels for
+  /// Chromium's --window-size/--window-position. With scale 1.0 the
+  /// placement is unchanged; values are clamped to stay within the native
+  /// integer ranges. Used on Windows (where the flags are raw physical
+  /// pixels); exercised by tests on every platform.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+  fn scale_placement(placement: WindowPlacement, scale: f64) -> WindowPlacement {
+    let clamp_i32 = |value: f64| {
+      value
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+    };
+    let clamp_u32 = |value: f64| value.round().clamp(0.0, f64::from(u32::MAX)) as u32;
+    WindowPlacement {
+      x: clamp_i32(f64::from(placement.x) * scale),
+      y: clamp_i32(f64::from(placement.y) * scale),
+      width: clamp_u32(f64::from(placement.width) * scale),
+      height: clamp_u32(f64::from(placement.height) * scale),
+    }
+  }
+
   fn window_launch_config(app_handle: &AppHandle, sequence: u64) -> Option<WindowLaunchConfig> {
     let monitor = app_handle
       .get_webview_window("main")
@@ -1250,7 +1271,16 @@ impl WayfernManager {
     if headless {
       args.push("--headless=new".to_string());
     } else if let Some(launch) = window_launch_config {
+      // Chromium's --window-size/--window-position are applied as raw
+      // physical screen pixels (browser_window_state.cc), whereas our
+      // placement is computed in logical (CSS) pixels to match
+      // --force-device-scale-factor. On Windows, multiply by the scale
+      // factor so the window keeps its intended size on scaled (HiDPI)
+      // displays; without this the window opens tiny on anything above
+      // 100% scaling.
       let placement = launch.placement;
+      #[cfg(target_os = "windows")]
+      let placement = Self::scale_placement(placement, launch.scale_factor);
       log::info!(
         "Opening Wayfern window at {},{} with taskbar-safe size {}x{} and scale {}",
         placement.x,
@@ -2198,6 +2228,66 @@ mod tests {
     assert_eq!(
       WayfernManager::logical_work_area_from_physical(0, 0, 1920, 1080, 0.0),
       None
+    );
+  }
+
+  #[test]
+  fn scaled_placement_grows_window_on_high_dpi_and_rounds() {
+    // A 200% display needs the window physically twice as large so it still
+    // looks like the intended logical size.
+    let logical = WindowPlacement {
+      x: 10,
+      y: 20,
+      width: 1217,
+      height: 732,
+    };
+    assert_eq!(
+      WayfernManager::scale_placement(logical, 2.0),
+      WindowPlacement {
+        x: 20,
+        y: 40,
+        width: 2434,
+        height: 1464,
+      }
+    );
+    assert_eq!(
+      WayfernManager::scale_placement(logical, 1.5),
+      WindowPlacement {
+        x: 15,
+        y: 30,
+        width: 1826,
+        height: 1098,
+      }
+    );
+  }
+
+  #[test]
+  fn scaled_placement_is_identity_at_scale_one() {
+    let logical = WindowPlacement {
+      x: -123,
+      y: 45,
+      width: 1211,
+      height: 710,
+    };
+    assert_eq!(WayfernManager::scale_placement(logical, 1.0), logical);
+  }
+
+  #[test]
+  fn scaled_placement_clamps_to_native_ranges() {
+    let logical = WindowPlacement {
+      x: i32::MAX,
+      y: i32::MIN,
+      width: u32::MAX,
+      height: u32::MAX,
+    };
+    assert_eq!(
+      WayfernManager::scale_placement(logical, 4.0),
+      WindowPlacement {
+        x: i32::MAX,
+        y: i32::MIN,
+        width: u32::MAX,
+        height: u32::MAX,
+      }
     );
   }
 
