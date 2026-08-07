@@ -1498,16 +1498,11 @@ pub fn run() {
         .build(),
     )
     .setup(|app| {
-      // Recover ephemeral dir mappings from RAM-backed storage (tmpfs/ramdisk)
-      ephemeral_dirs::recover_ephemeral_dirs();
-
-      // Extract icons and metadata for existing extensions that don't have them yet
-      {
-        let mgr = extension_manager::ExtensionManager::new();
-        mgr.ensure_icons_extracted();
-      }
-
-      // Create the main window programmatically
+      // Create the main window programmatically FIRST so the UI appears and
+      // stays responsive immediately; the heavier best-effort houseskeeping
+      // below runs on a background thread instead of blocking setup (a
+      // blocking RAM-disk create here once made the app open a white,
+      // unresponsive window on Windows).
       #[allow(unused_variables)]
       let win_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
         .title("Donut Browser")
@@ -1524,6 +1519,15 @@ pub fn run() {
 
       #[allow(unused_variables)]
       let window = win_builder.build().unwrap();
+
+      // Recover ephemeral dir mappings from RAM-backed storage (tmpfs/ramdisk)
+      // and extract icons/metadata for existing extensions. Best-effort and
+      // off the UI thread: RAM-disk creation may shell out to imdisk and can
+      // be slow (or hung) without a driver — never let it stall the window.
+      std::thread::spawn(|| {
+        ephemeral_dirs::recover_ephemeral_dirs();
+        extension_manager::ExtensionManager::new().ensure_icons_extracted();
+      });
 
       // System tray so the user can keep the app running after the close
       // dialog's "Minimize" action hides the window. Best-effort: a tray

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+#[cfg(target_os = "windows")]
+use std::time::Duration;
 
 use crate::profile::BrowserProfile;
 
@@ -89,8 +91,42 @@ fn get_or_create_macos_ramdisk() -> Result<PathBuf, String> {
   Ok(mount_point)
 }
 
+/// Run a command to completion but give up (and kill it) after `timeout`, so a
+/// missing or wedged RAM-disk driver can never stall the caller — RAM disk
+/// creation may run during app startup, where blocking the UI thread would
+/// show a white "Not Responding" window. Returns the exit status, or None if
+/// the command could not be started or did not finish in time.
+#[cfg(target_os = "windows")]
+fn run_command_timeout(
+  command: &mut std::process::Command,
+  timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+  use std::process::Stdio;
+  let mut child = command
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .ok()?;
+  let deadline = std::time::Instant::now() + timeout;
+  loop {
+    if let Some(status) = child.try_wait().ok().flatten() {
+      return Some(status);
+    }
+    if std::time::Instant::now() >= deadline {
+      let _ = child.kill();
+      let _ = child.wait();
+      return None;
+    }
+    std::thread::sleep(Duration::from_millis(25));
+  }
+}
+
 #[cfg(target_os = "windows")]
 fn get_or_create_windows_ramdisk() -> Result<PathBuf, String> {
+  // How long a single imdisk create (mount + NTFS format) is allowed to take
+  // before we give up and fall back to disk-backed ephemeral dirs.
+  const IMDISK_TIMEOUT: Duration = Duration::from_secs(5);
+
   // Check if a previous RAM disk with our directory already exists
   for letter in ['R', 'Q', 'P', 'O'] {
     let base = PathBuf::from(format!("{}:\\DonutEphemeral", letter));
@@ -106,27 +142,33 @@ fn get_or_create_windows_ramdisk() -> Result<PathBuf, String> {
       continue;
     }
 
-    let output = std::process::Command::new("imdisk")
-      .args(["-a", "-s", "256M", "-m", &drive, "-p", "/fs:ntfs /q /y"])
-      .output();
+    let mut command = std::process::Command::new("imdisk");
+    command
+      .arg("-a")
+      .arg("-s")
+      .arg("256M")
+      .arg("-m")
+      .arg(&drive)
+      .arg("-p")
+      .arg("/fs:ntfs /q /y");
+    let status = run_command_timeout(&mut command, IMDISK_TIMEOUT);
 
-    match output {
-      Ok(out) if out.status.success() => {
+    match status {
+      Some(status) if status.success() => {
         let base = PathBuf::from(format!("{}\\DonutEphemeral", drive));
         std::fs::create_dir_all(&base)
           .map_err(|e| format!("Failed to create dir on RAM disk: {e}"))?;
         log::info!("Created Windows RAM disk at {}", base.display());
         return Ok(base);
       }
-      Ok(out) => {
-        log::debug!(
-          "imdisk failed for drive {}: {}",
-          drive,
-          String::from_utf8_lossy(&out.stderr)
-        );
+      Some(_) => {
+        log::debug!("imdisk failed for drive {drive}");
       }
-      Err(e) => {
-        return Err(format!("imdisk not available: {e}"));
+      None => {
+        log::warn!(
+          "imdisk timed out after {:?} for drive {drive}",
+          IMDISK_TIMEOUT
+        );
       }
     }
   }
