@@ -110,9 +110,11 @@
   "settings": {
     "browserWindow": {
       "title": "Kích thước cửa sổ trình duyệt",
-      "description": "Kích thước mặc định của cửa sổ trình duyệt khi khởi chạy. Để trống để dùng mặc định (~1211×710). Áp dụng ở lần khởi chạy tiếp theo.",
-      "width": "Chiều rộng",
-      "height": "Chiều cao"
+      "description": "Cửa sổ trình duyệt mở với kích thước ngẫu nhiên trong khoảng này. Để trống để dùng mặc định (1211–1282 × 710–751). Áp dụng ở lần khởi chạy tiếp theo.",
+      "minWidth": "Chiều rộng tối thiểu",
+      "maxWidth": "Chiều rộng tối đa",
+      "minHeight": "Chiều cao tối thiểu",
+      "maxHeight": "Chiều cao tối đa"
     },
     "title": "Cài đặt",
     "appearance": {

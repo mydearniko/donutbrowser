@@ -343,18 +343,28 @@ impl WayfernManager {
     }
   }
 
-  /// The user-configured default browser-window size from Settings, when
-  /// both dimensions are set and non-zero.
-  fn configured_browser_window_size() -> Option<(u32, u32)> {
+  /// The user-configured browser-window size range from Settings, when all
+  /// four bounds are set and non-zero. Min/max are normalized so min <=
+  /// max even if the user enters them inverted.
+  fn configured_window_size_bounds() -> Option<((u32, u32), (u32, u32))> {
+    fn pair(min: u32, max: u32) -> (u32, u32) {
+      (min.min(max), min.max(max).max(1))
+    }
     crate::settings_manager::SettingsManager::instance()
       .load_settings()
       .ok()
       .and_then(|settings| {
         match (
-          settings.browser_window_width,
-          settings.browser_window_height,
+          settings.browser_window_min_width,
+          settings.browser_window_max_width,
+          settings.browser_window_min_height,
+          settings.browser_window_max_height,
         ) {
-          (Some(width), Some(height)) if width > 0 && height > 0 => Some((width, height)),
+          (Some(min_w), Some(max_w), Some(min_h), Some(max_h))
+            if min_w > 0 && max_w > 0 && min_h > 0 && max_h > 0 =>
+          {
+            Some((pair(min_w, max_w), pair(min_h, max_h)))
+          }
           _ => None,
         }
       })
@@ -1281,12 +1291,17 @@ impl WayfernManager {
 
     let mut args = Self::profile_launch_args(port, profile_path);
 
-    // Default browser-window size: the user-configured value from Settings
-    // (when both dimensions are set), otherwise a random size from the
-    // built-in range. Used for every non-headless launch so windows are a
-    // consistent, expected size.
-    let desired_default_size =
-      Self::configured_browser_window_size().unwrap_or_else(Self::random_default_window_size);
+    // Browser-window size: a random size within the user-configured range
+    // from Settings, or within the built-in default range when unset.
+    // Random-per-launch keeps the built-in anti-fingerprint behavior while
+    // letting the user bound the size.
+    let desired_default_size = match Self::configured_window_size_bounds() {
+      Some(((min_w, max_w), (min_h, max_h))) => (
+        rand::random_range(min_w..=max_w),
+        rand::random_range(min_h..=max_h),
+      ),
+      None => Self::random_default_window_size(),
+    };
 
     let window_launch_config = if headless {
       None

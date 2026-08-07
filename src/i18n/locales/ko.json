@@ -110,9 +110,11 @@
   "settings": {
     "browserWindow": {
       "title": "브라우저 창 크기",
-      "description": "실행하는 브라우저 창의 기ubcf8 크기입니다. 비uc6cc 두면 기ubcf8값(~1211×710)을 사uc6a9합니다. 다음 실행 시 적uc6a9됩니다.",
-      "width": "너비",
-      "height": "높이"
+      "description": "실행하는 브라우저 창은 이 범위 내의 무작위 크기로 열립니다. 비uc6cc 두면 기ubcf8값(1211–1282 × 710–751)을 사uc6a9합니다. 다음 실행 시 적uc6a9됩니다.",
+      "minWidth": "최소 너비",
+      "maxWidth": "최대 너비",
+      "minHeight": "최소 높이",
+      "maxHeight": "최대 높이"
     },
     "title": "설정",
     "appearance": {

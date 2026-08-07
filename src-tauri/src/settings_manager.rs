@@ -71,13 +71,18 @@ pub struct AppSettings {
   /// copy is always re-encrypted regardless of this flag.
   #[serde(default)]
   pub keep_decrypted_profiles_in_ram: bool,
-  /// Default size (CSS px) for launched Wayfern browser windows. `None`
-  /// keeps the built-in default window size (a range picked from the
-  /// work area). Applied at every browser launch.
+  /// Configurable window-size range (CSS px) for launched Wayfern
+  /// browser windows: each window picks a random size within these bounds.
+  /// `None` keeps the built-in default range. Applied at every browser
+  /// launch.
   #[serde(default)]
-  pub browser_window_width: Option<u32>,
+  pub browser_window_min_width: Option<u32>,
   #[serde(default)]
-  pub browser_window_height: Option<u32>,
+  pub browser_window_max_width: Option<u32>,
+  #[serde(default)]
+  pub browser_window_min_height: Option<u32>,
+  #[serde(default)]
+  pub browser_window_max_height: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -138,8 +143,10 @@ impl Default for AppSettings {
       onboarding_completed: false,
       disable_auto_updates: false,
       keep_decrypted_profiles_in_ram: false,
-      browser_window_width: None,
-      browser_window_height: None,
+      browser_window_min_width: None,
+      browser_window_max_width: None,
+      browser_window_min_height: None,
+      browser_window_max_height: None,
     }
   }
 }
@@ -1458,8 +1465,10 @@ mod tests {
       onboarding_completed: false,
       disable_auto_updates: false,
       keep_decrypted_profiles_in_ram: false,
-      browser_window_width: None,
-      browser_window_height: None,
+      browser_window_min_width: None,
+      browser_window_max_width: None,
+      browser_window_min_height: None,
+      browser_window_max_height: None,
     };
 
     let save_result = manager.save_settings(&test_settings);

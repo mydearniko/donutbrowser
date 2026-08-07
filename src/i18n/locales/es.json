@@ -110,9 +110,11 @@
   "settings": {
     "browserWindow": {
       "title": "Tamaño de ventana del navegador",
-      "description": "Tamaño predeterminado de las ventanas del navegador al abrir. Déjalo vacío para usar el valor por defecto (~1211×710). Se aplica en el siguiente inicio.",
-      "width": "Ancho",
-      "height": "Alto"
+      "description": "Las ventanas del navegador eligen un tamaño aleatorio dentro de este rango. Déjalo vacío para usar el predeterminado (1211–1282 × 710–751). Se aplica en el siguiente inicio.",
+      "minWidth": "Ancho mínimo",
+      "maxWidth": "Ancho máximo",
+      "minHeight": "Alto mínimo",
+      "maxHeight": "Alto máximo"
     },
     "title": "Configuración",
     "appearance": {

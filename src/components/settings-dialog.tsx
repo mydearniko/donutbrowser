@@ -68,8 +68,10 @@ interface AppSettings {
   api_token?: string;
   disable_auto_updates?: boolean;
   keep_decrypted_profiles_in_ram?: boolean;
-  browser_window_width?: number | null;
-  browser_window_height?: number | null;
+  browser_window_min_width?: number | null;
+  browser_window_max_width?: number | null;
+  browser_window_min_height?: number | null;
+  browser_window_max_height?: number | null;
 }
 
 interface CustomThemeState {
@@ -646,8 +648,14 @@ export function SettingsDialog({
       JSON.stringify(settings.custom_theme ?? {}) !==
         JSON.stringify(originalSettings.custom_theme ?? {})) ||
     settings.disable_auto_updates !== originalSettings.disable_auto_updates ||
-    settings.browser_window_width !== originalSettings.browser_window_width ||
-    settings.browser_window_height !== originalSettings.browser_window_height;
+    settings.browser_window_min_width !==
+      originalSettings.browser_window_min_width ||
+    settings.browser_window_max_width !==
+      originalSettings.browser_window_max_width ||
+    settings.browser_window_min_height !==
+      originalSettings.browser_window_min_height ||
+    settings.browser_window_max_height !==
+      originalSettings.browser_window_max_height;
 
   return (
     <>
@@ -846,17 +854,17 @@ export function SettingsDialog({
               </p>
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2">
-                  <Label htmlFor="browser-window-width" className="text-sm">
-                    {t("settings.browserWindow.width")}
+                  <Label htmlFor="browser-window-min-width" className="text-sm">
+                    {t("settings.browserWindow.minWidth")}
                   </Label>
                   <Input
-                    id="browser-window-width"
+                    id="browser-window-min-width"
                     type="number"
                     min={0}
-                    value={settings.browser_window_width ?? ""}
+                    value={settings.browser_window_min_width ?? ""}
                     onChange={(e) =>
                       updateSetting(
-                        "browser_window_width",
+                        "browser_window_min_width",
                         parseWindowSize(e.target.value),
                       )
                     }
@@ -864,21 +872,63 @@ export function SettingsDialog({
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="browser-window-height" className="text-sm">
-                    {t("settings.browserWindow.height")}
+                  <Label htmlFor="browser-window-max-width" className="text-sm">
+                    {t("settings.browserWindow.maxWidth")}
                   </Label>
                   <Input
-                    id="browser-window-height"
+                    id="browser-window-max-width"
                     type="number"
                     min={0}
-                    value={settings.browser_window_height ?? ""}
+                    value={settings.browser_window_max_width ?? ""}
                     onChange={(e) =>
                       updateSetting(
-                        "browser_window_height",
+                        "browser_window_max_width",
+                        parseWindowSize(e.target.value),
+                      )
+                    }
+                    placeholder="1282"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label
+                    htmlFor="browser-window-min-height"
+                    className="text-sm"
+                  >
+                    {t("settings.browserWindow.minHeight")}
+                  </Label>
+                  <Input
+                    id="browser-window-min-height"
+                    type="number"
+                    min={0}
+                    value={settings.browser_window_min_height ?? ""}
+                    onChange={(e) =>
+                      updateSetting(
+                        "browser_window_min_height",
                         parseWindowSize(e.target.value),
                       )
                     }
                     placeholder="710"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label
+                    htmlFor="browser-window-max-height"
+                    className="text-sm"
+                  >
+                    {t("settings.browserWindow.maxHeight")}
+                  </Label>
+                  <Input
+                    id="browser-window-max-height"
+                    type="number"
+                    min={0}
+                    value={settings.browser_window_max_height ?? ""}
+                    onChange={(e) =>
+                      updateSetting(
+                        "browser_window_max_height",
+                        parseWindowSize(e.target.value),
+                      )
+                    }
+                    placeholder="751"
                   />
                 </div>
               </div>

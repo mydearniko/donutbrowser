@@ -110,9 +110,11 @@
   "settings": {
     "browserWindow": {
       "title": "浏览器窗口大小",
-      "description": "启动浏览器窗口的默认尺寸。留空则使用默认值（约1211×710）。下次启动时生效。",
-      "width": "宽度",
-      "height": "高度"
+      "description": "浏览器窗口会在这个范围内随机选择尺寸。留空则使用默认值（1211–1282 × 710–751）。下次启动时生效。",
+      "minWidth": "最小宽度",
+      "maxWidth": "最大宽度",
+      "minHeight": "最小高度",
+      "maxHeight": "最大高度"
     },
     "title": "设置",
     "appearance": {

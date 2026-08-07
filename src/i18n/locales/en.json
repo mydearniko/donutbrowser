@@ -110,9 +110,11 @@
   "settings": {
     "browserWindow": {
       "title": "Browser Window Size",
-      "description": "Default size for launched browser windows. Leave empty to use the built-in default (~1211×710). Applied on the next launch.",
-      "width": "Width",
-      "height": "Height"
+      "description": "Launched browser windows pick a random size within this range. Leave empty to use the default (1211–1282 × 710–751). Applied on the next launch.",
+      "minWidth": "Minimum width",
+      "maxWidth": "Maximum width",
+      "minHeight": "Minimum height",
+      "maxHeight": "Maximum height"
     },
     "title": "Settings",
     "appearance": {

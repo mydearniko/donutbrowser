@@ -110,9 +110,11 @@
   "settings": {
     "browserWindow": {
       "title": "Taille de la fenêtre du navigateur",
-      "description": "Taille par défaut des fenêtres du navigateur au lancement. Laissez vide pour utiliser la valeur par défaut (~1211×710). Appliquée au prochain lancement.",
-      "width": "Largeur",
-      "height": "Hauteur"
+      "description": "Les fenêtres du navigateur choisissent une taille aléatoire dans cette plage. Laissez vide pour la valeur par défaut (1211–1282 × 710–751). Appliquée au prochain lancement.",
+      "minWidth": "Largeur minimale",
+      "maxWidth": "Largeur maximale",
+      "minHeight": "Hauteur minimale",
+      "maxHeight": "Hauteur maximale"
     },
     "title": "Paramètres",
     "appearance": {

@@ -110,9 +110,11 @@
   "settings": {
     "browserWindow": {
       "title": "Tamanho da janela do navegador",
-      "description": "Tamanho padrão das janelas do navegador ao iniciar. Deixe em branco para usar o padrão (~1211×710). Aplicado no próximo início.",
-      "width": "Largura",
-      "height": "Altura"
+      "description": "As janelas do navegador abrem com um tamanho aleatório dentro desse intervalo. Deixe em branco para usar o padrão (1211–1282 × 710–751). Aplicado no próximo início.",
+      "minWidth": "Largura mínima",
+      "maxWidth": "Largura máxima",
+      "minHeight": "Altura mínima",
+      "maxHeight": "Altura máxima"
     },
     "title": "Configurações",
     "appearance": {
