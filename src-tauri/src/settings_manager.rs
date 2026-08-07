@@ -9,6 +9,8 @@ use aes_gcm::{
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
 use rand::RngExt;
 
+use tauri::Manager;
+
 use crate::profile::types::SyncMode;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -71,6 +73,17 @@ pub struct AppSettings {
   /// copy is always re-encrypted regardless of this flag.
   #[serde(default)]
   pub keep_decrypted_profiles_in_ram: bool,
+  /// Main-window size range in CSS pixels, configurable in Settings.
+  /// `None` on the low end keeps the built-in 640x400 floor; `None` on the
+  /// high end means no maximum. Applied at launch and live on save.
+  #[serde(default)]
+  pub window_min_width: Option<u32>,
+  #[serde(default)]
+  pub window_min_height: Option<u32>,
+  #[serde(default)]
+  pub window_max_width: Option<u32>,
+  #[serde(default)]
+  pub window_max_height: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -131,6 +144,10 @@ impl Default for AppSettings {
       onboarding_completed: false,
       disable_auto_updates: false,
       keep_decrypted_profiles_in_ram: false,
+      window_min_width: None,
+      window_min_height: None,
+      window_max_width: None,
+      window_max_height: None,
     }
   }
 }
@@ -956,7 +973,88 @@ pub async fn save_app_settings(
     .save_settings(&persist_settings)
     .map_err(|e| format!("Failed to save settings: {e}"))?;
 
+  // Reflect the window size range immediately so a restart isn't needed.
+  apply_window_size_range(&app_handle, &settings).await;
+
   Ok(settings)
+}
+
+/// Resolve the configured main-window size range to concrete CSS-pixel
+/// values. Unset halves keep the built-in 640x400 floor / no ceiling, so
+/// the default behavior is unchanged until the user configures a range.
+fn window_size_range(settings: &AppSettings) -> ((f64, f64), Option<(f64, f64)>) {
+  const DEFAULT_MIN_W: f64 = 640.0;
+  const DEFAULT_MIN_H: f64 = 400.0;
+  let min_w = settings
+    .window_min_width
+    .map(f64::from)
+    .unwrap_or(DEFAULT_MIN_W);
+  let min_h = settings
+    .window_min_height
+    .map(f64::from)
+    .unwrap_or(DEFAULT_MIN_H);
+  let max = match (settings.window_max_width, settings.window_max_height) {
+    (Some(w), Some(h)) => Some((f64::from(w).max(min_w), f64::from(h).max(min_h))),
+    _ => None,
+  };
+  ((min_w, min_h), max)
+}
+
+/// Apply the window size range to the main window and clamp its current size
+/// into range, so changes take effect immediately without a restart.
+async fn apply_window_size_range(app_handle: &tauri::AppHandle, settings: &AppSettings) {
+  let Some(window) = app_handle.get_webview_window("main") else {
+    return;
+  };
+  let ((min_w, min_h), max) = window_size_range(settings);
+  if window
+    .set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
+      min_w, min_h,
+    ))))
+    .is_err()
+  {
+    return;
+  }
+  if let Some((max_w, max_h)) = max {
+    if window
+      .set_max_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
+        max_w, max_h,
+      ))))
+      .is_err()
+    {
+      return;
+    }
+  } else {
+    let _ = window.set_max_size::<tauri::Size>(None);
+  }
+
+  let inner = match window.inner_size() {
+    Ok(s) => s,
+    Err(_) => return,
+  };
+  let (mut w, mut h) = (f64::from(inner.width), f64::from(inner.height));
+  let mut changed = false;
+  if w < min_w {
+    w = min_w;
+    changed = true;
+  }
+  if h < min_h {
+    h = min_h;
+    changed = true;
+  }
+  if let Some((max_w, max_h)) = max {
+    if w > max_w {
+      w = max_w;
+      changed = true;
+    }
+    if h > max_h {
+      h = max_h;
+      changed = true;
+    }
+  }
+  if changed {
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(w, h)));
+  }
 }
 
 /// Read the most recent N log files concatenated into a single string,
@@ -1449,6 +1547,10 @@ mod tests {
       onboarding_completed: false,
       disable_auto_updates: false,
       keep_decrypted_profiles_in_ram: false,
+      window_min_width: None,
+      window_min_height: None,
+      window_max_width: None,
+      window_max_height: None,
     };
 
     let save_result = manager.save_settings(&test_settings);

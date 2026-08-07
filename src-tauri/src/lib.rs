@@ -1503,16 +1503,41 @@ pub fn run() {
       // below runs on a background thread instead of blocking setup (a
       // blocking RAM-disk create here once made the app open a white,
       // unresponsive window on Windows).
+      //
+      // Apply the user-configurable window size range (Settings -> Window):
+      // unset values keep the built-in 640x400 floor and no ceiling.
+      let window_settings = settings_manager::SettingsManager::instance()
+        .load_settings()
+        .ok();
+      let (min_w, min_h) = window_settings
+        .as_ref()
+        .map(|s| {
+          (
+            s.window_min_width.map(f64::from).unwrap_or(640.0),
+            s.window_min_height.map(f64::from).unwrap_or(400.0),
+          )
+        })
+        .unwrap_or((640.0, 400.0));
+      let max_inner = window_settings.as_ref().and_then(|s| {
+        match (s.window_max_width, s.window_max_height) {
+          (Some(w), Some(h)) => Some((f64::from(w), f64::from(h))),
+          _ => None,
+        }
+      });
+
       #[allow(unused_variables)]
-      let win_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+      let mut win_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
         .title("Donut Browser")
         .inner_size(880.0, 500.0)
-        .min_inner_size(640.0, 400.0)
+        .min_inner_size(min_w, min_h)
         .resizable(true)
         .fullscreen(false)
         .center()
         .focused(true)
         .visible(true);
+      if let Some((max_w, max_h)) = max_inner {
+        win_builder = win_builder.max_inner_size(max_w, max_h);
+      }
 
       #[cfg(target_os = "windows")]
       let win_builder = win_builder.decorations(false);

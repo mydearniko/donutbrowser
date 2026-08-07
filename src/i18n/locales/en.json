@@ -197,7 +197,16 @@
     "disableAutoUpdates": "Disable App Auto Updates",
     "disableAutoUpdatesDescription": "Prevent the app from automatically checking and installing Donut Browser updates. Browser updates are not affected.",
     "keepDecryptedProfilesInRam": "Keep Decrypted Profiles In RAM",
-    "keepDecryptedProfilesInRamDescription": "Preserve the decrypted in-RAM copy of password-protected profiles between launches for faster startup. The on-disk copy stays encrypted regardless."
+    "keepDecryptedProfilesInRamDescription": "Preserve the decrypted in-RAM copy of password-protected profiles between launches for faster startup. The on-disk copy stays encrypted regardless.",
+    "windowSize": {
+      "title": "Window Size",
+      "description": "Restrict how small or large the main window can be. Leave a field empty to keep the default (min 640×400, no maximum).",
+      "minWidth": "Minimum width",
+      "minHeight": "Minimum height",
+      "maxWidth": "Maximum width",
+      "maxHeight": "Maximum height",
+      "unlimited": "No limit"
+    }
   },
   "header": {
     "searchPlaceholder": "Search profiles...",

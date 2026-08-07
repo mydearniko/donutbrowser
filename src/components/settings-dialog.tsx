@@ -68,6 +68,10 @@ interface AppSettings {
   api_token?: string;
   disable_auto_updates?: boolean;
   keep_decrypted_profiles_in_ram?: boolean;
+  window_min_width?: number | null;
+  window_min_height?: number | null;
+  window_max_width?: number | null;
+  window_max_height?: number | null;
 }
 
 interface CustomThemeState {
@@ -89,6 +93,14 @@ interface SettingsDialogProps {
   onIntegrationsOpen?: () => void;
   subPage?: boolean;
 }
+
+/** Parse a window-size input into a positive integer, or null when cleared
+ * (which means "use the built-in default" for min, "no limit" for max). */
+const parseWindowSize = (raw: string): number | null => {
+  const n = parseInt(raw, 10);
+  if (Number.isNaN(n) || n <= 0) return null;
+  return n;
+};
 
 export function SettingsDialog({
   isOpen,
@@ -510,7 +522,13 @@ export function SettingsDialog({
   const updateSetting = useCallback(
     (
       key: keyof AppSettings,
-      value: boolean | string | Record<string, string> | undefined,
+      value:
+        | boolean
+        | string
+        | number
+        | null
+        | Record<string, string>
+        | undefined,
     ) => {
       setSettings((prev) => ({ ...prev, [key]: value as unknown as never }));
     },
@@ -816,6 +834,90 @@ export function SettingsDialog({
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Window Section */}
+            <div className="space-y-4">
+              <Label className="text-base font-medium">
+                {t("settings.windowSize.title")}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.windowSize.description")}
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-2">
+                  <Label htmlFor="window-min-width" className="text-sm">
+                    {t("settings.windowSize.minWidth")}
+                  </Label>
+                  <Input
+                    id="window-min-width"
+                    type="number"
+                    min={0}
+                    value={settings.window_min_width ?? ""}
+                    onChange={(e) =>
+                      updateSetting(
+                        "window_min_width",
+                        parseWindowSize(e.target.value),
+                      )
+                    }
+                    placeholder="640"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="window-min-height" className="text-sm">
+                    {t("settings.windowSize.minHeight")}
+                  </Label>
+                  <Input
+                    id="window-min-height"
+                    type="number"
+                    min={0}
+                    value={settings.window_min_height ?? ""}
+                    onChange={(e) =>
+                      updateSetting(
+                        "window_min_height",
+                        parseWindowSize(e.target.value),
+                      )
+                    }
+                    placeholder="400"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="window-max-width" className="text-sm">
+                    {t("settings.windowSize.maxWidth")}
+                  </Label>
+                  <Input
+                    id="window-max-width"
+                    type="number"
+                    min={0}
+                    value={settings.window_max_width ?? ""}
+                    onChange={(e) =>
+                      updateSetting(
+                        "window_max_width",
+                        parseWindowSize(e.target.value),
+                      )
+                    }
+                    placeholder={t("settings.windowSize.unlimited")}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="window-max-height" className="text-sm">
+                    {t("settings.windowSize.maxHeight")}
+                  </Label>
+                  <Input
+                    id="window-max-height"
+                    type="number"
+                    min={0}
+                    value={settings.window_max_height ?? ""}
+                    onChange={(e) =>
+                      updateSetting(
+                        "window_max_height",
+                        parseWindowSize(e.target.value),
+                      )
+                    }
+                    placeholder={t("settings.windowSize.unlimited")}
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Language Section */}
