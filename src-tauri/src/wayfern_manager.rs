@@ -562,20 +562,40 @@ impl WayfernManager {
     }
   }
 
+  /// Deadline for CDP commands that legitimately take seconds to complete:
+  /// `Wayfern` fingerprint commands (generation with a `wayfernToken`
+  /// contacts an external fingerprint service) and page navigation. Quick
+  /// commands keep the default 2-second deadline so a genuinely stuck one
+  /// still fails fast instead of stalling the profile flow.
+  const SLOW_CDP_TIMEOUT: Duration = Duration::from_secs(30);
+
   async fn send_cdp_command(
     &self,
     ws_url: &str,
     method: &str,
     params: serde_json::Value,
   ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
-    match tokio::time::timeout(
-      Duration::from_secs(2),
-      self.send_cdp_command_inner(ws_url, method, params),
-    )
-    .await
-    {
+    self
+      .send_cdp_command_with_timeout(ws_url, method, params, Duration::from_secs(2))
+      .await
+  }
+
+  async fn send_cdp_command_with_timeout(
+    &self,
+    ws_url: &str,
+    method: &str,
+    params: serde_json::Value,
+    timeout: Duration,
+  ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    match tokio::time::timeout(timeout, self.send_cdp_command_inner(ws_url, method, params)).await {
       Ok(result) => result,
-      Err(_) => Err(format!("CDP command {method} timed out after 2 seconds").into()),
+      Err(_) => Err(
+        format!(
+          "CDP command {method} timed out after {} seconds",
+          timeout.as_secs()
+        )
+        .into(),
+      ),
     }
   }
 
@@ -991,7 +1011,12 @@ impl WayfernManager {
     }
 
     let refresh_result = self
-      .send_cdp_command(&ws_url, "Wayfern.refreshFingerprint", refresh_params)
+      .send_cdp_command_with_timeout(
+        &ws_url,
+        "Wayfern.refreshFingerprint",
+        refresh_params,
+        Self::SLOW_CDP_TIMEOUT,
+      )
       .await;
 
     if let Err(e) = refresh_result {
@@ -1000,7 +1025,12 @@ impl WayfernManager {
     }
 
     let get_result = self
-      .send_cdp_command(&ws_url, "Wayfern.getFingerprint", json!({}))
+      .send_cdp_command_with_timeout(
+        &ws_url,
+        "Wayfern.getFingerprint",
+        json!({}),
+        Self::SLOW_CDP_TIMEOUT,
+      )
       .await;
 
     let (fingerprint, geolocation_applied) = match get_result {
@@ -1472,7 +1502,12 @@ impl WayfernManager {
             (
               ws_url,
               self
-                .send_cdp_command(ws_url, "Wayfern.setFingerprint", fingerprint_params)
+                .send_cdp_command_with_timeout(
+                  ws_url,
+                  "Wayfern.setFingerprint",
+                  fingerprint_params,
+                  Self::SLOW_CDP_TIMEOUT,
+                )
                 .await,
             )
           });
@@ -1535,7 +1570,12 @@ impl WayfernManager {
       if let Some(target) = page_targets.first() {
         if let Some(ws_url) = &target.websocket_debugger_url {
           if let Err(e) = self
-            .send_cdp_command(ws_url, "Page.navigate", json!({ "url": url }))
+            .send_cdp_command_with_timeout(
+              ws_url,
+              "Page.navigate",
+              json!({ "url": url }),
+              Self::SLOW_CDP_TIMEOUT,
+            )
             .await
           {
             log::error!("Failed to navigate to URL: {e}");
