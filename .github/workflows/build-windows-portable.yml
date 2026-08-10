@@ -83,7 +83,7 @@ jobs:
             ./src-tauri -> target
           # Share one cache across all runs so a source-only change reuses
           # the compiled dependency tree.
-          shared-key: windows-portable
+          shared-key: windows-portable-v2
           cache-on-failure: "true"
           # Also cache the workspace's own crates (donutbrowser_lib,
           # donut-proxy) so unchanged crates skip recompilation on rebuilds.
