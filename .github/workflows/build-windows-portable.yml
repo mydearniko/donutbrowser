@@ -76,9 +76,13 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          workdir: ./src-tauri
-          # Share one cache across all runs of this workflow so a source-only
-          # change reuses the compiled dependency tree.
+          # The Cargo workspace lives in src-tauri/, not the repo root;
+          # without an explicit `workspaces` mapping the target dir is never
+          # cached (each run is a full cold compile).
+          workspaces: |
+            ./src-tauri -> ./src-tauri/target
+          # Share one cache across all runs so a source-only change reuses
+          # the compiled dependency tree.
           shared-key: windows-portable
           cache-on-failure: "true"
 
