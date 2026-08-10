@@ -123,17 +123,30 @@ jobs:
         run: |
           set -euo pipefail
           APP="src-tauri/target/x86_64-pc-windows-msvc/release-portable"
-          for f in "$APP/donutbrowser.exe" "$APP/donut-proxy.exe" "$APP/WebView2Loader.dll"; do
+          for f in "$APP/donutbrowser.exe" "$APP/donut-proxy.exe"; do
             if [[ ! -s "$f" ]]; then
               echo "missing portable runtime file: $f" >&2
               exit 1
             fi
           done
+          # WebView2Loader.dll ships from the webview2-com-sys crate build
+          # output (a plain `cargo build` leaves it there, not in the
+          # release dir); prefer a top-level copy if one is present.
+          LOADER=""
+          if [[ -s "$APP/WebView2Loader.dll" ]]; then
+            LOADER="$APP/WebView2Loader.dll"
+          elif ls "$APP"/build/webview2-com-sys-*/out/x64/WebView2Loader.dll >/dev/null 2>&1; then
+            LOADER="$(ls "$APP"/build/webview2-com-sys-*/out/x64/WebView2Loader.dll | head -n 1)"
+          fi
+          if [[ -z "$LOADER" || ! -s "$LOADER" ]]; then
+            echo "missing WebView2Loader.dll" >&2
+            exit 1
+          fi
           mkdir -p Donut-Portable
           touch Donut-Portable/.portable
           cp "$APP/donutbrowser.exe" Donut-Portable/Donut.exe
           cp "$APP/donut-proxy.exe" Donut-Portable/donut-proxy.exe
-          cp "$APP/WebView2Loader.dll" Donut-Portable/WebView2Loader.dll
+          cp "$LOADER" Donut-Portable/WebView2Loader.dll
 
       - name: Package portable ZIP
         shell: bash
