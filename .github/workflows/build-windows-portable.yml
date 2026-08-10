@@ -105,11 +105,14 @@ jobs:
         shell: bash
         run: pnpm exec next build
 
-      - name: Build sidecar binary (donut-proxy)
+      - name: Build binaries (donutbrowser + donut-proxy)
         shell: bash
         working-directory: ./src-tauri
+        # One invocation -> single feature unification, so the shared
+        # donutbrowser_lib compiles once instead of once per --bin (two
+        # separate invocations rebuild it twice, ~18 min, even warm).
         run: |
-          cargo build --locked --profile release-portable --target x86_64-pc-windows-msvc --bin donut-proxy
+          cargo build --locked --profile release-portable --target x86_64-pc-windows-msvc --bin donutbrowser --bin donut-proxy
 
       - name: Stage sidecar for Tauri
         shell: bash
@@ -118,12 +121,6 @@ jobs:
           mkdir -p src-tauri/binaries
           cp "src-tauri/target/x86_64-pc-windows-msvc/release-portable/donut-proxy.exe" \
             "src-tauri/binaries/donut-proxy-x86_64-pc-windows-msvc.exe"
-
-      - name: Build app binary (donutbrowser)
-        shell: bash
-        working-directory: ./src-tauri
-        run: |
-          cargo build --locked --profile release-portable --target x86_64-pc-windows-msvc --bin donutbrowser
 
       - name: Stage portable folder
         shell: bash
