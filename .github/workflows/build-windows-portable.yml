@@ -85,6 +85,9 @@ jobs:
           # the compiled dependency tree.
           shared-key: windows-portable
           cache-on-failure: "true"
+          # Also cache the workspace's own crates (donutbrowser_lib,
+          # donut-proxy) so unchanged crates skip recompilation on rebuilds.
+          cache-workspace-crates: "true"
 
       - name: Cache Next.js build
         uses: actions/cache@v4
