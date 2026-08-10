@@ -9,6 +9,7 @@ import {
   LuChevronRight,
   LuFolderPlus,
   LuSearch,
+  LuTrash2,
   LuX,
 } from "react-icons/lu";
 import { getCurrentOS } from "@/lib/browser-utils";
@@ -40,6 +41,7 @@ const UNGROUPED_FILTER_ID = "__ungrouped__";
 interface Props {
   onCreateProfileDialogOpen: (open: boolean) => void;
   onCreateGroup: () => void;
+  onOpenTrash: () => void;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
   groups: GroupWithCount[];
@@ -53,6 +55,7 @@ interface Props {
 const HomeHeader = ({
   onCreateProfileDialogOpen,
   onCreateGroup,
+  onOpenTrash,
   searchQuery,
   onSearchQueryChange,
   groups,
@@ -361,6 +364,24 @@ const HomeHeader = ({
             </Button>
           </TooltipTrigger>
           <TooltipContent>{t("groups.add")}</TooltipContent>
+        </Tooltip>
+      )}
+
+      {showProfileToolbar && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="size-7 shrink-0"
+              onClick={onOpenTrash}
+              aria-label={t("header.openTrash")}
+            >
+              <LuTrash2 className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t("header.openTrash")}</TooltipContent>
         </Tooltip>
       )}
 

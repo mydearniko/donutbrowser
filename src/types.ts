@@ -557,3 +557,13 @@ export interface VpnStatus {
   bytes_received?: number;
   last_handshake?: number;
 }
+
+export interface TrashEntry {
+  id: string;
+  name: string;
+  browser: string;
+  version: string;
+  deleted_at: number;
+  original_size: number;
+  archive_size: number;
+}

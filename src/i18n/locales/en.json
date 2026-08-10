@@ -34,7 +34,8 @@
       "saving": "Saving…",
       "saved": "Saved",
       "copied": "Copied",
-      "learnMore": "Learn more"
+      "learnMore": "Learn more",
+      "deleteForever": "Delete forever"
     },
     "status": {
       "active": "Active",
@@ -224,7 +225,8 @@
     "newProfile": "New",
     "donutLogo": "Donut Browser logo",
     "scrollGroupsLeft": "Scroll groups left",
-    "scrollGroupsRight": "Scroll groups right"
+    "scrollGroupsRight": "Scroll groups right",
+    "openTrash": "Trash"
   },
   "profiles": {
     "title": "Profiles",
@@ -293,7 +295,7 @@
     "ephemeralBadge": "Ephemeral",
     "bulkDelete": {
       "title": "Delete Selected Profiles",
-      "description": "This action cannot be undone. This will permanently delete {{count}} profile(s) and all associated data.",
+      "description": "{{count}} profile(s) will be moved to the trash. You can restore them later.",
       "confirmButton": "Delete {{count}} Profile(s)"
     },
     "note": {
@@ -305,7 +307,7 @@
     },
     "delete": {
       "title": "Delete Profile",
-      "description": "This action cannot be undone. This will permanently delete the profile \"{{profileName}}\" and all its associated data.",
+      "description": "The profile \"{{profileName}}\" will be moved to the trash. You can restore it later.",
       "confirmButton": "Delete Profile"
     },
     "actionBar": {
@@ -362,7 +364,8 @@
       "noProxiesAvailable": "No proxies or VPNs available. Add one to route this profile's traffic.",
       "search": "Search proxies or VPNs...",
       "notFound": "No proxies or VPNs found.",
-      "searchWithCountries": "Search proxies, VPNs, or countries..."
+      "searchWithCountries": "Search proxies, VPNs, or countries...",
+      "searchPaste": "Paste a proxy to add it instantly (host:port, socks5://user:pass@host:port)"
     },
     "launchHook": {
       "label": "Launch Hook URL",
@@ -911,7 +914,8 @@
       "exportSuccess": "Successfully exported {{count}} items",
       "syncSuccess": "Sync completed successfully",
       "profileSynced": "Profile '{{name}}' synced successfully",
-      "cacheCleared": "Cache cleared successfully"
+      "cacheCleared": "Cache cleared successfully",
+      "proxyCreatedFromPaste": "Added proxy {{name}} and assigned it to this profile"
     },
     "error": {
       "profileCreateFailed": "Failed to create profile",
@@ -1670,7 +1674,10 @@
     "vpnsHeading": "VPNs",
     "createByCountryHeading": "Create by country",
     "editAssignedProxy": "Edit assigned proxy: {{name}}",
-    "proxyPickerLimited": "Showing the first {{shown}} of {{total}} matches. Refine your search."
+    "proxyPickerLimited": "Showing the first {{shown}} of {{total}} matches. Refine your search.",
+    "fromPaste": "From paste",
+    "usePastedProxy": "Create proxy from paste and use for this profile",
+    "proxiesHeading": "Proxies"
   },
   "dataTableActionBar": {
     "selected": "{{count}} selected",
@@ -1828,7 +1835,9 @@
     "syncDeviceIdInvalid": "Device ID must be 3–128 characters and use only letters, numbers, dots, underscores, or hyphens.",
     "syncDeviceNameInvalid": "Device name must be 1–80 characters and cannot contain control characters.",
     "syncDeviceIdBusy": "Close all synced profiles and wait for active sync transfers before changing the device ID.",
-    "profileSyncPrepareFailed": "Could not safely prepare this profile from sync. Check your connection and try again."
+    "profileSyncPrepareFailed": "Could not safely prepare this profile from sync. Check your connection and try again.",
+    "invalidProxyText": "That doesn't look like a valid proxy. Paste something like host:port, protocol://user:pass@host:port, or socks5://host:port.",
+    "profileAlreadyExists": "A profile with this ID already exists."
   },
   "rail": {
     "profiles": "Profiles",
@@ -2067,5 +2076,23 @@
   "wayfernTokenUnavailable": {
     "title": "Wayfern token unavailable",
     "description": "The hosted Wayfern token could not be refreshed. Local profiles and automation remain available, but token-backed fingerprint features may be limited."
+  },
+  "trashDialog": {
+    "title": "Trash",
+    "description": "{{count}} profile(s) in the trash. Deleted profiles are compressed and can be restored later.",
+    "empty": "The trash is empty.",
+    "restored": "Profile restored",
+    "restoredDescription": "{{name}} was restored from the trash.",
+    "purged": "Profile deleted permanently",
+    "purgedDescription": "{{name}} was deleted permanently.",
+    "emptied": "Trash emptied",
+    "deletedAt": "Deleted {{date}}",
+    "compressedFrom": "compressed from {{original}}",
+    "restore": "Restore",
+    "emptyTrash": "Empty trash",
+    "purgeTitle": "Delete \"{{name}}\" permanently?",
+    "purgeDescription": "This will permanently delete the profile and its compressed data. This cannot be undone.",
+    "purgeAllTitle": "Delete everything in trash?",
+    "purgeAllDescription": "All trashed profiles will be permanently deleted. This cannot be undone."
   }
 }

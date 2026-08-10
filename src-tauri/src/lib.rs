@@ -68,7 +68,8 @@ use browser_runner::{
 
 use profile::manager::{
   assign_profiles_network, check_browser_status, clone_profile, create_browser_profile_new,
-  delete_profile, list_browser_profiles, rename_profile, update_profile_dns_blocklist,
+  delete_profile, empty_profile_trash, list_browser_profiles, list_trash, purge_profile_from_trash,
+  rename_profile, restore_profile_from_trash, update_profile_dns_blocklist,
   update_profile_launch_hook, update_profile_note, update_profile_proxy,
   update_profile_proxy_bypass_rules, update_profile_tags, update_profile_vpn,
   update_profile_window_color, update_wayfern_config,
@@ -407,6 +408,16 @@ async fn import_proxies_from_parsed(
   crate::proxy_manager::PROXY_MANAGER
     .import_proxies_from_parsed(&app_handle, parsed_proxies, name_prefix)
     .map_err(|e| format!("Failed to import proxies: {e}"))
+}
+
+#[tauri::command]
+async fn create_proxy_from_text(
+  app_handle: tauri::AppHandle,
+  text: String,
+) -> Result<crate::proxy_manager::StoredProxy, String> {
+  crate::proxy_manager::PROXY_MANAGER
+    .create_proxy_from_text(&app_handle, &text)
+    .map_err(|e| wrap_backend_error(e, "Failed to create proxy from text"))
 }
 
 #[tauri::command]
@@ -2320,6 +2331,7 @@ pub fn run() {
       import_proxies_json,
       parse_txt_proxies,
       import_proxies_from_parsed,
+      create_proxy_from_text,
       update_wayfern_config,
       generate_sample_fingerprint,
       get_profile_groups,
@@ -2329,6 +2341,10 @@ pub fn run() {
       delete_profile_group,
       assign_profiles_to_group,
       delete_selected_profiles,
+      list_trash,
+      restore_profile_from_trash,
+      purge_profile_from_trash,
+      empty_profile_trash,
       list_extensions,
       get_extension_icon,
       add_extension,

@@ -34,7 +34,8 @@
       "saving": "Đang lưu…",
       "saved": "Đã lưu",
       "copied": "Đã sao chép",
-      "learnMore": "Tìm hiểu thêm"
+      "learnMore": "Tìm hiểu thêm",
+      "deleteForever": "Xóa vĩnh viễn"
     },
     "status": {
       "active": "Đang hoạt động",
@@ -224,7 +225,8 @@
     "newProfile": "Mới",
     "donutLogo": "Logo Donut Browser",
     "scrollGroupsLeft": "Cuộn nhóm sang trái",
-    "scrollGroupsRight": "Cuộn nhóm sang phải"
+    "scrollGroupsRight": "Cuộn nhóm sang phải",
+    "openTrash": "Thùng rác"
   },
   "profiles": {
     "title": "Hồ sơ",
@@ -293,7 +295,7 @@
     "ephemeralBadge": "Tạm thời",
     "bulkDelete": {
       "title": "Xóa các hồ sơ đã chọn",
-      "description": "Hành động này không thể hoàn tác. Thao tác này sẽ xóa vĩnh viễn {{count}} hồ sơ và tất cả dữ liệu liên quan.",
+      "description": "{{count}} hồ sơ sẽ được chuyển vào thùng rác. Bạn có thể khôi phục sau.",
       "confirmButton": "Xóa {{count}} hồ sơ"
     },
     "note": {
@@ -305,7 +307,7 @@
     },
     "delete": {
       "title": "Xóa hồ sơ",
-      "description": "Hành động này không thể hoàn tác. Thao tác này sẽ xóa vĩnh viễn hồ sơ \"{{profileName}}\" và tất cả dữ liệu liên quan.",
+      "description": "Hồ sơ \"{{profileName}}\" sẽ được chuyển vào thùng rác. Bạn có thể khôi phục sau.",
       "confirmButton": "Xóa hồ sơ"
     },
     "actionBar": {
@@ -362,7 +364,8 @@
       "noProxiesAvailable": "Chưa có proxy hoặc VPN nào. Hãy thêm một proxy để định tuyến lưu lượng của hồ sơ này.",
       "search": "Tìm kiếm proxy hoặc VPN...",
       "notFound": "Không tìm thấy proxy hoặc VPN.",
-      "searchWithCountries": "Tìm kiếm proxy, VPN hoặc quốc gia..."
+      "searchWithCountries": "Tìm kiếm proxy, VPN hoặc quốc gia...",
+      "searchPaste": "Dán proxy để thêm ngay (host:port, socks5://user:pass@host:port)"
     },
     "launchHook": {
       "label": "URL Hook khởi chạy",
@@ -911,7 +914,8 @@
       "exportSuccess": "Đã xuất thành công {{count}} mục",
       "syncSuccess": "Đồng bộ hoàn tất",
       "profileSynced": "Đã đồng bộ profile '{{name}}' thành công",
-      "cacheCleared": "Xóa bộ nhớ đệm thành công"
+      "cacheCleared": "Xóa bộ nhớ đệm thành công",
+      "proxyCreatedFromPaste": "Đã thêm proxy {{name}} và gán cho hồ sơ này"
     },
     "error": {
       "profileCreateFailed": "Tạo profile thất bại",
@@ -1670,7 +1674,10 @@
     "vpnsHeading": "VPN",
     "createByCountryHeading": "Tạo theo quốc gia",
     "editAssignedProxy": "Sửa proxy đã gán: {{name}}",
-    "proxyPickerLimited": "Đang hiển thị {{shown}} kết quả đầu tiên trong {{total}}. Hãy thu hẹp tìm kiếm."
+    "proxyPickerLimited": "Đang hiển thị {{shown}} kết quả đầu tiên trong {{total}}. Hãy thu hẹp tìm kiếm.",
+    "fromPaste": "Từ nội dung đã dán",
+    "usePastedProxy": "Tạo proxy từ nội dung đã dán và dùng cho hồ sơ này",
+    "proxiesHeading": "Proxy"
   },
   "dataTableActionBar": {
     "selected": "Đã chọn {{count}}",
@@ -1828,7 +1835,9 @@
     "syncDeviceIdInvalid": "ID thiết bị phải dài từ 3 đến 128 ký tự và chỉ dùng chữ cái, chữ số, dấu chấm, dấu gạch dưới hoặc dấu gạch ngang.",
     "syncDeviceNameInvalid": "Tên thiết bị phải dài từ 1 đến 80 ký tự và không được chứa ký tự điều khiển.",
     "syncDeviceIdBusy": "Hãy đóng tất cả hồ sơ đang đồng bộ và chờ quá trình truyền hoàn tất trước khi đổi ID thiết bị.",
-    "profileSyncPrepareFailed": "Không thể chuẩn bị hồ sơ này một cách an toàn từ dữ liệu đồng bộ. Hãy kiểm tra kết nối rồi thử lại."
+    "profileSyncPrepareFailed": "Không thể chuẩn bị hồ sơ này một cách an toàn từ dữ liệu đồng bộ. Hãy kiểm tra kết nối rồi thử lại.",
+    "invalidProxyText": "Đây có vẻ không phải proxy hợp lệ. Hãy dán nội dung như host:port, giao thức://tên:mật khẩu@host:port hoặc socks5://host:port.",
+    "profileAlreadyExists": "Đã có hồ sơ với ID này."
   },
   "rail": {
     "profiles": "Profile",
@@ -2067,5 +2076,23 @@
   "wayfernTokenUnavailable": {
     "title": "Không có mã thông báo Wayfern",
     "description": "Không thể làm mới mã thông báo Wayfern được lưu trữ. Hồ sơ cục bộ và tính năng tự động hóa vẫn khả dụng, nhưng các tính năng dấu vân tay dựa trên mã thông báo có thể bị hạn chế."
+  },
+  "trashDialog": {
+    "title": "Thùng rác",
+    "description": "Có {{count}} hồ sơ trong thùng rác. Hồ sơ đã xóa được nén lại và có thể khôi phục sau.",
+    "empty": "Thùng rác trống.",
+    "restored": "Đã khôi phục hồ sơ",
+    "restoredDescription": "Đã khôi phục {{name}} từ thùng rác.",
+    "purged": "Đã xóa hồ sơ vĩnh viễn",
+    "purgedDescription": "Đã xóa vĩnh viễn {{name}}.",
+    "emptied": "Đã làm trống thùng rác",
+    "deletedAt": "Đã xóa {{date}}",
+    "compressedFrom": "được nén từ {{original}}",
+    "restore": "Khôi phục",
+    "emptyTrash": "Làm trống thùng rác",
+    "purgeTitle": "Xóa vĩnh viễn \"{{name}}\"?",
+    "purgeDescription": "Thao tác này sẽ xóa vĩnh viễn hồ sơ và dữ liệu nén của hồ sơ. Không thể hoàn tác.",
+    "purgeAllTitle": "Xóa mọi thứ trong thùng rác?",
+    "purgeAllDescription": "Tất cả hồ sơ trong thùng rác sẽ bị xóa vĩnh viễn. Không thể hoàn tác."
   }
 }

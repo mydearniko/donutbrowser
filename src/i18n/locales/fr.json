@@ -34,7 +34,8 @@
       "saving": "Enregistrement…",
       "saved": "Enregistré",
       "copied": "Copié",
-      "learnMore": "En savoir plus"
+      "learnMore": "En savoir plus",
+      "deleteForever": "Supprimer définitivement"
     },
     "status": {
       "active": "Actif",
@@ -224,7 +225,8 @@
     "newProfile": "Nouveau",
     "donutLogo": "Logo de Donut Browser",
     "scrollGroupsLeft": "Faire défiler les groupes vers la gauche",
-    "scrollGroupsRight": "Faire défiler les groupes vers la droite"
+    "scrollGroupsRight": "Faire défiler les groupes vers la droite",
+    "openTrash": "Corbeille"
   },
   "profiles": {
     "title": "Profils",
@@ -293,7 +295,7 @@
     "ephemeralBadge": "Éphémère",
     "bulkDelete": {
       "title": "Supprimer les profils sélectionnés",
-      "description": "Cette action est irréversible. Elle supprimera définitivement {{count}} profil(s) et toutes les données associées.",
+      "description": "{{count}} profil(s) seront déplacés vers la corbeille. Vous pourrez les restaurer plus tard.",
       "confirmButton": "Supprimer {{count}} profil(s)"
     },
     "note": {
@@ -305,7 +307,7 @@
     },
     "delete": {
       "title": "Supprimer le profil",
-      "description": "Cette action est irréversible. Elle supprimera définitivement le profil « {{profileName}} » et toutes ses données associées.",
+      "description": "Le profil « {{profileName}} » sera déplacé vers la corbeille. Vous pourrez le restaurer plus tard.",
       "confirmButton": "Supprimer le profil"
     },
     "actionBar": {
@@ -362,7 +364,8 @@
       "noProxiesAvailable": "Aucun proxy ou VPN disponible. Ajoutez-en un pour router le trafic de ce profil.",
       "search": "Rechercher proxies ou VPN...",
       "notFound": "Aucun proxy ou VPN trouvé.",
-      "searchWithCountries": "Rechercher des proxies, VPN ou pays..."
+      "searchWithCountries": "Rechercher des proxies, VPN ou pays...",
+      "searchPaste": "Collez un proxy pour l'ajouter instantanément (host:port, socks5://user:pass@host:port)"
     },
     "launchHook": {
       "label": "URL du hook de lancement",
@@ -911,7 +914,8 @@
       "exportSuccess": "{{count}} éléments exportés avec succès",
       "syncSuccess": "Synchronisation terminée avec succès",
       "profileSynced": "Profil '{{name}}' synchronisé avec succès",
-      "cacheCleared": "Cache effacé avec succès"
+      "cacheCleared": "Cache effacé avec succès",
+      "proxyCreatedFromPaste": "Proxy {{name}} ajouté et assigné à ce profil"
     },
     "error": {
       "profileCreateFailed": "Échec de la création du profil",
@@ -1670,7 +1674,10 @@
     "vpnsHeading": "VPN",
     "createByCountryHeading": "Créer par pays",
     "editAssignedProxy": "Modifier le proxy attribué : {{name}}",
-    "proxyPickerLimited": "Affichage des {{shown}} premiers résultats sur {{total}}. Affinez la recherche."
+    "proxyPickerLimited": "Affichage des {{shown}} premiers résultats sur {{total}}. Affinez la recherche.",
+    "fromPaste": "Depuis le collage",
+    "usePastedProxy": "Créer un proxy à partir du collage et l'utiliser pour ce profil",
+    "proxiesHeading": "Proxies"
   },
   "dataTableActionBar": {
     "selected": "{{count}} sélectionné(s)",
@@ -1828,7 +1835,9 @@
     "syncDeviceIdInvalid": "L’ID de l’appareil doit contenir 3 à 128 caractères et uniquement des lettres, chiffres, points, tirets bas ou tirets.",
     "syncDeviceNameInvalid": "Le nom de l’appareil doit contenir 1 à 80 caractères et ne peut pas contenir de caractères de contrôle.",
     "syncDeviceIdBusy": "Fermez tous les profils synchronisés et attendez la fin des transferts actifs avant de modifier l’ID de l’appareil.",
-    "profileSyncPrepareFailed": "Impossible de préparer ce profil en toute sécurité à partir de la synchronisation. Vérifiez votre connexion et réessayez."
+    "profileSyncPrepareFailed": "Impossible de préparer ce profil en toute sécurité à partir de la synchronisation. Vérifiez votre connexion et réessayez.",
+    "invalidProxyText": "Ce n'est pas un proxy valide. Collez quelque chose comme host:port, protocole://utilisateur:motdepasse@host:port ou socks5://host:port.",
+    "profileAlreadyExists": "Un profil avec cet ID existe déjà."
   },
   "rail": {
     "profiles": "Profils",
@@ -2067,5 +2076,23 @@
   "wayfernTokenUnavailable": {
     "title": "Jeton Wayfern indisponible",
     "description": "Le jeton Wayfern hébergé n’a pas pu être actualisé. Les profils locaux et l’automatisation restent disponibles, mais les fonctions d’empreinte dépendant du jeton peuvent être limitées."
+  },
+  "trashDialog": {
+    "title": "Corbeille",
+    "description": "{{count}} profil(s) dans la corbeille. Les profils supprimés sont compressés et peuvent être restaurés ultérieurement.",
+    "empty": "La corbeille est vide.",
+    "restored": "Profil restauré",
+    "restoredDescription": "{{name}} a été restauré depuis la corbeille.",
+    "purged": "Profil supprimé définitivement",
+    "purgedDescription": "{{name}} a été supprimé définitivement.",
+    "emptied": "Corbeille vidée",
+    "deletedAt": "Supprimé {{date}}",
+    "compressedFrom": "compressé depuis {{original}}",
+    "restore": "Restaurer",
+    "emptyTrash": "Vider la corbeille",
+    "purgeTitle": "Supprimer « {{name}} » définitivement ?",
+    "purgeDescription": "Cela supprimera définitivement le profil et ses données compressées. Cette action est irréversible.",
+    "purgeAllTitle": "Tout supprimer dans la corbeille ?",
+    "purgeAllDescription": "Tous les profils de la corbeille seront supprimés définitivement. Cette action est irréversible."
   }
 }

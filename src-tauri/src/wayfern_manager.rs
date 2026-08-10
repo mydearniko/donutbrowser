@@ -9,7 +9,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -94,7 +93,6 @@ struct WayfernManagerInner {
 pub struct WayfernManager {
   inner: Arc<AsyncMutex<WayfernManagerInner>>,
   http_client: Client,
-  placement_sequence: AtomicU64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,17 +137,10 @@ const MAX_CDP_TARGET_RACE: usize = 4;
 /// Chromium switch that overrides the startup preference and reopens the
 /// windows/tabs stored inside this profile's own user-data directory.
 pub(crate) const RESTORE_LAST_SESSION_ARG: &str = "--restore-last-session";
-const WINDOW_CASCADE_OFFSETS: [(i32, i32); 9] = [
-  (0, 0),
-  (56, 36),
-  (-56, 36),
-  (56, -36),
-  (-56, -36),
-  (0, 62),
-  (0, -62),
-  (82, 0),
-  (-82, 0),
-];
+/// How far (logical px) each additional browser window is shifted so the
+/// previous window's title bar stays visible and clickable, letting the
+/// user reach any opened window without moving them.
+const CASCADE_TITLE_STEP: i32 = 30;
 
 impl WayfernManager {
   fn new() -> Self {
@@ -165,7 +156,6 @@ impl WayfernManager {
         .no_proxy()
         .build()
         .expect("Failed to build reqwest client for wayfern_manager"),
-      placement_sequence: AtomicU64::new(0),
     }
   }
 
@@ -285,34 +275,43 @@ impl WayfernManager {
     )
   }
 
-  fn position_window_in_work_area(
+  /// Position a browser window inside its work area. The first window is
+  /// perfectly centered; each additional window is cascaded diagonally
+  /// (one `CASCADE_TITLE_STEP` per window) from the center so earlier
+  /// title bars stay visible and clickable. The cascade wraps back to
+  /// the center once it would run off the work area, so windows never
+  /// pile up in a corner or leave the screen regardless of how many are
+  /// opened.
+  fn cascade_placement(
     work_area: LogicalWorkArea,
     window_size: (u32, u32),
-    offset: (i32, i32),
+    window_index: u64,
   ) -> WindowPlacement {
-    let position_axis =
-      |start: i32, area_length: u32, window_length: u32, requested_offset: i32| {
-        let slack = area_length.saturating_sub(window_length);
-        let margin = WINDOW_EDGE_MARGIN.min(slack / 2);
-        let centered = i64::from(slack / 2) + i64::from(requested_offset);
-        let offset = centered.clamp(i64::from(margin), i64::from(slack - margin));
-        (i64::from(start) + offset).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    let margin = i64::from(WINDOW_EDGE_MARGIN);
+    let step = i64::from(CASCADE_TITLE_STEP);
+    let position_axis = |origin: i32, area_len: u32, window_len: u32| -> i32 {
+      let slack = (i64::from(area_len) - i64::from(window_len)).max(0);
+      let center = slack / 2;
+      let min_off = margin.min(slack / 2);
+      let max_off = (slack - margin).max(0);
+      let offset = if window_index == 0 {
+        center
+      } else {
+        let slots = (slack / step).max(1) as u64;
+        let ring = (window_index - 1) % slots;
+        center
+          .saturating_add(step.saturating_mul((ring + 1) as i64))
+          .clamp(min_off, max_off)
       };
+      (i64::from(origin) + offset).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    };
 
     WindowPlacement {
-      x: position_axis(work_area.x, work_area.width, window_size.0, offset.0),
-      y: position_axis(work_area.y, work_area.height, window_size.1, offset.1),
+      x: position_axis(work_area.x, work_area.width, window_size.0),
+      y: position_axis(work_area.y, work_area.height, window_size.1),
       width: window_size.0,
       height: window_size.1,
     }
-  }
-
-  fn cascade_offset(sequence: u64, jitter_x: i32, jitter_y: i32) -> (i32, i32) {
-    let base = WINDOW_CASCADE_OFFSETS[sequence as usize % WINDOW_CASCADE_OFFSETS.len()];
-    (
-      base.0.saturating_add(jitter_x),
-      base.1.saturating_add(jitter_y),
-    )
   }
 
   fn random_default_window_size() -> (u32, u32) {
@@ -320,27 +319,6 @@ impl WayfernManager {
       rand::random_range(DEFAULT_WINDOW_MIN_WIDTH..=DEFAULT_WINDOW_MAX_WIDTH),
       rand::random_range(DEFAULT_WINDOW_MIN_HEIGHT..=DEFAULT_WINDOW_MAX_HEIGHT),
     )
-  }
-
-  /// Scale a logical (CSS px) placement to physical screen pixels for
-  /// Chromium's --window-size/--window-position. With scale 1.0 the
-  /// placement is unchanged; values are clamped to stay within the native
-  /// integer ranges. Used on Windows (where the flags are raw physical
-  /// pixels); exercised by tests on every platform.
-  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-  fn scale_placement(placement: WindowPlacement, scale: f64) -> WindowPlacement {
-    let clamp_i32 = |value: f64| {
-      value
-        .round()
-        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-    };
-    let clamp_u32 = |value: f64| value.round().clamp(0.0, f64::from(u32::MAX)) as u32;
-    WindowPlacement {
-      x: clamp_i32(f64::from(placement.x) * scale),
-      y: clamp_i32(f64::from(placement.y) * scale),
-      width: clamp_u32(f64::from(placement.width) * scale),
-      height: clamp_u32(f64::from(placement.height) * scale),
-    }
   }
 
   /// The user-configured browser-window size range from Settings, when all
@@ -372,7 +350,7 @@ impl WayfernManager {
 
   fn window_launch_config(
     app_handle: &AppHandle,
-    sequence: u64,
+    window_index: u64,
     desired_size: (u32, u32),
   ) -> Option<WindowLaunchConfig> {
     let monitor = app_handle
@@ -403,14 +381,10 @@ impl WayfernManager {
       scale_factor,
     )?;
     let window_size = Self::fit_window_size_to_work_area(logical_work_area, desired_size);
-    let offset = Self::cascade_offset(
-      sequence,
-      rand::random_range(-7..=7),
-      rand::random_range(-7..=7),
-    );
+    let placement = Self::cascade_placement(logical_work_area, window_size, window_index);
 
     Some(WindowLaunchConfig {
-      placement: Self::position_window_in_work_area(logical_work_area, window_size, offset),
+      placement,
       scale_factor,
       screen_width: logical_screen.width,
       screen_height: logical_screen.height,
@@ -1306,25 +1280,30 @@ impl WayfernManager {
     let window_launch_config = if headless {
       None
     } else {
-      let sequence = self.placement_sequence.fetch_add(1, Ordering::Relaxed);
-      Self::window_launch_config(app_handle, sequence, desired_default_size)
+      // Base window placement on how many browser windows are already
+      // open: the first one centers, later ones cascade so earlier
+      // title bars stay reachable. Using the live count (rather than a
+      // monotonically growing counter) means the first window always
+      // centers again after the user closes all windows.
+      let open_window_count = {
+        let inner = self.inner.lock().await;
+        inner.instances.len() as u64
+      };
+      Self::window_launch_config(app_handle, open_window_count, desired_default_size)
     };
 
     if headless {
       args.push("--headless=new".to_string());
     } else if let Some(launch) = window_launch_config {
-      // Chromium's --window-size/--window-position are applied as raw
-      // physical screen pixels (browser_window_state.cc), whereas our
-      // placement is computed in logical (CSS) pixels to match
-      // --force-device-scale-factor. On Windows, multiply by the scale
-      // factor so the window keeps its intended size on scaled (HiDPI)
-      // displays; without this the window opens tiny on anything above
-      // 100% scaling.
+      // `--window-size`/`--window-position` are specified in logical
+      // (CSS) pixels: on Windows the OS scales the created window to
+      // physical pixels by the display scale factor. Passing the
+      // logical placement directly (as on Linux/macOS) keeps the size
+      // correct on scaled (HiDPI) displays — pre-multiplying by the
+      // scale factor would apply 125% twice.
       let placement = launch.placement;
-      #[cfg(target_os = "windows")]
-      let placement = Self::scale_placement(placement, launch.scale_factor);
       log::info!(
-        "Opening Wayfern window at {},{} with taskbar-safe size {}x{} and scale {}",
+        "Opening Wayfern window at {},{} with logical size {}x{} and scale {} (on-screen ≈ logical * scale)",
         placement.x,
         placement.y,
         placement.width,
@@ -2267,69 +2246,10 @@ mod tests {
         height: 1120,
       })
     );
+
     assert_eq!(
       WayfernManager::logical_work_area_from_physical(0, 0, 1920, 1080, 0.0),
       None
-    );
-  }
-
-  #[test]
-  fn scaled_placement_grows_window_on_high_dpi_and_rounds() {
-    // A 200% display needs the window physically twice as large so it still
-    // looks like the intended logical size.
-    let logical = WindowPlacement {
-      x: 10,
-      y: 20,
-      width: 1217,
-      height: 732,
-    };
-    assert_eq!(
-      WayfernManager::scale_placement(logical, 2.0),
-      WindowPlacement {
-        x: 20,
-        y: 40,
-        width: 2434,
-        height: 1464,
-      }
-    );
-    assert_eq!(
-      WayfernManager::scale_placement(logical, 1.5),
-      WindowPlacement {
-        x: 15,
-        y: 30,
-        width: 1826,
-        height: 1098,
-      }
-    );
-  }
-
-  #[test]
-  fn scaled_placement_is_identity_at_scale_one() {
-    let logical = WindowPlacement {
-      x: -123,
-      y: 45,
-      width: 1211,
-      height: 710,
-    };
-    assert_eq!(WayfernManager::scale_placement(logical, 1.0), logical);
-  }
-
-  #[test]
-  fn scaled_placement_clamps_to_native_ranges() {
-    let logical = WindowPlacement {
-      x: i32::MAX,
-      y: i32::MIN,
-      width: u32::MAX,
-      height: u32::MAX,
-    };
-    assert_eq!(
-      WayfernManager::scale_placement(logical, 4.0),
-      WindowPlacement {
-        x: i32::MAX,
-        y: i32::MIN,
-        width: u32::MAX,
-        height: u32::MAX,
-      }
     );
   }
 
@@ -2366,7 +2286,8 @@ mod tests {
       width: 2048,
       height: 1120,
     };
-    let centered = WayfernManager::position_window_in_work_area(work_area, (1282, 751), (0, 0));
+    // The first window is perfectly centered.
+    let centered = WayfernManager::cascade_placement(work_area, (1282, 751), 0);
     assert_eq!(
       centered,
       WindowPlacement {
@@ -2377,17 +2298,19 @@ mod tests {
       }
     );
 
-    let staggered = WayfernManager::position_window_in_work_area(work_area, (1282, 751), (56, 36));
-    assert_eq!((staggered.x, staggered.y), (439, 252));
-    assert!(staggered.x >= WINDOW_EDGE_MARGIN as i32);
-    assert!(staggered.y >= 32 + WINDOW_EDGE_MARGIN as i32);
-    assert!(staggered.x + staggered.width as i32 <= 2048 - WINDOW_EDGE_MARGIN as i32);
-    assert!(staggered.y + staggered.height as i32 <= 1152 - WINDOW_EDGE_MARGIN as i32);
+    // The next window is cascaded diagonally so the first window's
+    // title bar stays visible, still fully inside the work area.
+    let cascaded = WayfernManager::cascade_placement(work_area, (1282, 751), 1);
+    assert_eq!((cascaded.x, cascaded.y), (413, 246));
+    assert!(cascaded.x >= WINDOW_EDGE_MARGIN as i32);
+    assert!(cascaded.y >= 32 + WINDOW_EDGE_MARGIN as i32);
+    assert!(cascaded.x + cascaded.width as i32 <= 2048 - WINDOW_EDGE_MARGIN as i32);
+    assert!(cascaded.y + cascaded.height as i32 <= 1152 - WINDOW_EDGE_MARGIN as i32);
   }
 
   #[test]
   fn staggered_windows_handle_negative_monitor_coordinates() {
-    let placement = WayfernManager::position_window_in_work_area(
+    let placement = WayfernManager::cascade_placement(
       LogicalWorkArea {
         x: -1920,
         y: 30,
@@ -2395,19 +2318,56 @@ mod tests {
         height: 1050,
       },
       (1280, 750),
-      (-56, 36),
+      0,
     );
-    assert_eq!((placement.x, placement.y), (-1656, 216));
+    assert_eq!((placement.x, placement.y), (-1600, 180));
     assert!(placement.x >= -1920 + WINDOW_EDGE_MARGIN as i32);
     assert!(placement.x + placement.width as i32 <= -(WINDOW_EDGE_MARGIN as i32));
     assert!(placement.y + placement.height as i32 <= 1080 - WINDOW_EDGE_MARGIN as i32);
   }
 
   #[test]
+  fn cascaded_windows_stay_on_screen_regardless_of_count() {
+    let work_area = LogicalWorkArea {
+      x: 0,
+      y: 0,
+      width: 2048,
+      height: 1120,
+    };
+    // Even with a huge number of open windows the cascade wraps and
+    // clamps, so every window remains inside the work area with margins.
+    for index in 0..1_000u64 {
+      let placement = WayfernManager::cascade_placement(work_area, (1282, 751), index);
+      assert!(placement.x >= WINDOW_EDGE_MARGIN as i32);
+      assert!(placement.y >= WINDOW_EDGE_MARGIN as i32);
+      assert!(
+        placement.x + placement.width as i32 <= 2048 - WINDOW_EDGE_MARGIN as i32,
+        "index {index} ran off the right edge"
+      );
+      assert!(
+        placement.y + placement.height as i32 <= 1120 - WINDOW_EDGE_MARGIN as i32,
+        "index {index} ran off the bottom edge"
+      );
+    }
+  }
+
+  #[test]
   fn first_three_cascade_slots_are_distinct() {
-    assert_eq!(WayfernManager::cascade_offset(0, 0, 0), (0, 0));
-    assert_eq!(WayfernManager::cascade_offset(1, 0, 0), (56, 36));
-    assert_eq!(WayfernManager::cascade_offset(2, 0, 0), (-56, 36));
+    let work_area = LogicalWorkArea {
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080,
+    };
+    let first = WayfernManager::cascade_placement(work_area, (1280, 750), 0);
+    let second = WayfernManager::cascade_placement(work_area, (1280, 750), 1);
+    let third = WayfernManager::cascade_placement(work_area, (1280, 750), 2);
+    let positions: Vec<(i32, i32)> =
+      vec![(first.x, first.y), (second.x, second.y), (third.x, third.y)];
+    // The cascade steps all windows away from the centered origin so
+    // each one is distinguishable from the others.
+    let unique = positions.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique.len(), positions.len());
   }
 
   #[test]

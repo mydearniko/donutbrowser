@@ -34,7 +34,8 @@
       "saving": "保存中…",
       "saved": "保存しました",
       "copied": "コピーしました",
-      "learnMore": "詳細"
+      "learnMore": "詳細",
+      "deleteForever": "完全に削除"
     },
     "status": {
       "active": "アクティブ",
@@ -224,7 +225,8 @@
     "newProfile": "新規",
     "donutLogo": "Donut Browser ロゴ",
     "scrollGroupsLeft": "グループを左へスクロール",
-    "scrollGroupsRight": "グループを右へスクロール"
+    "scrollGroupsRight": "グループを右へスクロール",
+    "openTrash": "ゴミ箱"
   },
   "profiles": {
     "title": "プロファイル",
@@ -293,7 +295,7 @@
     "ephemeralBadge": "一時的",
     "bulkDelete": {
       "title": "選択したプロファイルを削除",
-      "description": "この操作は取り消せません。{{count}} 個のプロファイルと関連するすべてのデータが永久に削除されます。",
+      "description": "{{count}}件のプロフィールがゴミ箱に移動されます。後で復元できます。",
       "confirmButton": "{{count}} 個のプロファイルを削除"
     },
     "note": {
@@ -305,7 +307,7 @@
     },
     "delete": {
       "title": "プロファイルを削除",
-      "description": "この操作は取り消せません。プロファイル「{{profileName}}」と関連するすべてのデータが永久に削除されます。",
+      "description": "プロフィール「{{profileName}}」はゴミ箱に移動されます。後で復元できます。",
       "confirmButton": "プロファイルを削除"
     },
     "actionBar": {
@@ -362,7 +364,8 @@
       "noProxiesAvailable": "利用可能なプロキシまたはVPNがありません。このプロファイルのトラフィックをルーティングするために追加してください。",
       "search": "プロキシまたは VPN を検索...",
       "notFound": "プロキシまたは VPN が見つかりません。",
-      "searchWithCountries": "プロキシ、VPN、または国を検索..."
+      "searchWithCountries": "プロキシ、VPN、または国を検索...",
+      "searchPaste": "プロキシを貼り付けると即座に追加 (host:port、socks5://user:pass@host:port)"
     },
     "launchHook": {
       "label": "起動フックURL",
@@ -911,7 +914,8 @@
       "exportSuccess": "{{count}} 個のアイテムが正常にエクスポートされました",
       "syncSuccess": "同期が正常に完了しました",
       "profileSynced": "プロファイル '{{name}}' が正常に同期されました",
-      "cacheCleared": "キャッシュが正常にクリアされました"
+      "cacheCleared": "キャッシュが正常にクリアされました",
+      "proxyCreatedFromPaste": "プロキシ「{{name}}」を追加してこのプロフィールに割り当てました"
     },
     "error": {
       "profileCreateFailed": "プロファイルの作成に失敗しました",
@@ -1670,7 +1674,10 @@
     "vpnsHeading": "VPN",
     "createByCountryHeading": "国別に作成",
     "editAssignedProxy": "割り当て済みプロキシを編集：{{name}}",
-    "proxyPickerLimited": "{{total}}件中、先頭の{{shown}}件を表示しています。検索を絞り込んでください。"
+    "proxyPickerLimited": "{{total}}件中、先頭の{{shown}}件を表示しています。検索を絞り込んでください。",
+    "fromPaste": "貼り付けから作成",
+    "usePastedProxy": "貼り付けた内容からプロキシを作成してこのプロフィールに割り当てる",
+    "proxiesHeading": "プロキシ"
   },
   "dataTableActionBar": {
     "selected": "{{count}} 件選択",
@@ -1828,7 +1835,9 @@
     "syncDeviceIdInvalid": "デバイス ID は 3～128 文字で、英数字、ピリオド、アンダースコア、ハイフンのみ使用できます。",
     "syncDeviceNameInvalid": "デバイス名は 1～80 文字で、制御文字は使用できません。",
     "syncDeviceIdBusy": "デバイス ID を変更する前に、すべての同期プロファイルを閉じ、進行中の同期転送が完了するまで待ってください。",
-    "profileSyncPrepareFailed": "同期からこのプロファイルを安全に準備できませんでした。接続を確認して、もう一度お試しください。"
+    "profileSyncPrepareFailed": "同期からこのプロファイルを安全に準備できませんでした。接続を確認して、もう一度お試しください。",
+    "invalidProxyText": "有効なプロキシの形式ではありません。host:port、プロトコル://ユーザー名:パスワード@host:port、socks5://host:port などの形式で貼り付けてください。",
+    "profileAlreadyExists": "この ID のプロフィールは既に存在します。"
   },
   "rail": {
     "profiles": "プロファイル",
@@ -2067,5 +2076,23 @@
   "wayfernTokenUnavailable": {
     "title": "Wayfernトークンを利用できません",
     "description": "ホストされたWayfernトークンを更新できませんでした。ローカルプロファイルと自動化は引き続き利用できますが、トークンを使用するフィンガープリント機能が制限される場合があります。"
+  },
+  "trashDialog": {
+    "title": "ゴミ箱",
+    "description": "ゴミ箱に{{count}}件のプロフィールがあります。削除したプロフィールは圧縮され、後で復元できます。",
+    "empty": "ゴミ箱は空です。",
+    "restored": "プロフィールを復元しました",
+    "restoredDescription": "ゴミ箱から「{{name}}」を復元しました。",
+    "purged": "プロフィールを完全に削除しました",
+    "purgedDescription": "「{{name}}」を完全に削除しました。",
+    "emptied": "ゴミ箱を空にしました",
+    "deletedAt": "削除日: {{date}}",
+    "compressedFrom": "{{original}} から圧縮",
+    "restore": "復元",
+    "emptyTrash": "ゴミ箱を空にする",
+    "purgeTitle": "「{{name}}」を完全に削除しますか？",
+    "purgeDescription": "プロフィールと圧縮データを完全に削除します。この操作は元に戻せません。",
+    "purgeAllTitle": "ゴミ箱の中身をすべて削除しますか？",
+    "purgeAllDescription": "ゴミ箱内のすべてのプロフィールを完全に削除します。この操作は元に戻せません。"
   }
 }

@@ -544,20 +544,18 @@ impl ProfileManager {
     let profiles_dir = self.get_profiles_dir();
     let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
 
-    // Delete the entire UUID directory (contains both metadata.json and profile data)
+    // Move the profile into the trash (compressed) instead of deleting it.
+    // The original directory is removed once it has been archived.
     if profile_uuid_dir.exists() {
-      log::info!("Deleting profile directory: {}", profile_uuid_dir.display());
+      crate::profile::trash::trash_profile(&profile_uuid_dir, &profile)?;
       fs::remove_dir_all(&profile_uuid_dir)?;
-      log::info!("Profile directory deleted successfully");
-    }
-
-    // Verify deletion was successful
-    if profile_uuid_dir.exists() {
-      return Err(format!("Failed to completely delete profile '{}'", profile.name).into());
+      if profile_uuid_dir.exists() {
+        return Err(format!("Failed to completely delete profile '{}'", profile.name).into());
+      }
     }
 
     log::info!(
-      "Profile '{}' (ID: {}) deleted successfully",
+      "Profile '{}' (ID: {}) moved to trash",
       profile.name,
       profile_id
     );
@@ -600,6 +598,7 @@ impl ProfileManager {
     if let Err(e) = events::emit_empty("profiles-changed") {
       log::warn!("Warning: Failed to emit profiles-changed event: {e}");
     }
+    let _ = events::emit_empty(crate::profile::trash::TRASH_EVENT);
 
     Ok(())
   }
@@ -613,6 +612,14 @@ impl ProfileManager {
     let profiles_dir = self.get_profiles_dir();
     let profile_dir = profiles_dir.join(profile_id);
     if profile_dir.exists() {
+      // Also recoverable: tombstone deletes compress into the trash too, so
+      // a profile removed on another device can still be restored here.
+      let profile_uuid = uuid::Uuid::parse_str(profile_id).unwrap_or_default();
+      if let Ok(Some(profile)) = self.get_profile_by_id(profile_uuid) {
+        if let Err(e) = crate::profile::trash::trash_profile(&profile_dir, &profile) {
+          log::warn!("Failed to trash tombstoned profile {profile_id}: {e}");
+        }
+      }
       fs::remove_dir_all(&profile_dir)?;
       log::info!("Deleted local profile {} (tombstoned remotely)", profile_id);
     }
@@ -624,6 +631,7 @@ impl ProfileManager {
     }
 
     let _ = crate::events::emit_empty("profiles-changed");
+    let _ = crate::events::emit_empty(crate::profile::trash::TRASH_EVENT);
     Ok(())
   }
 
@@ -958,11 +966,12 @@ impl ProfileManager {
         sync_enabled_ids.push(profile_id.clone());
       }
 
-      // Delete the profile
+      // Move the profile into the trash (compressed) instead of deleting it
       let profiles_dir = self.get_profiles_dir();
       let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
 
       if profile_uuid_dir.exists() {
+        crate::profile::trash::trash_profile(&profile_uuid_dir, profile)?;
         std::fs::remove_dir_all(&profile_uuid_dir)?;
       }
     }
@@ -985,6 +994,7 @@ impl ProfileManager {
     if let Err(e) = events::emit_empty("profiles-changed") {
       log::warn!("Warning: Failed to emit profiles-changed event: {e}");
     }
+    let _ = events::emit_empty(crate::profile::trash::TRASH_EVENT);
 
     Ok(())
   }
@@ -2173,6 +2183,42 @@ pub fn delete_profile(app_handle: tauri::AppHandle, profile_id: String) -> Resul
   ProfileManager::instance()
     .delete_profile(&app_handle, &profile_id)
     .map_err(|e| format!("Failed to delete profile: {e}"))
+}
+
+#[tauri::command]
+pub fn list_trash() -> Result<Vec<crate::profile::trash::TrashEntry>, String> {
+  crate::profile::trash::list_trash().map_err(|e| format!("Failed to list trash: {e}"))
+}
+
+#[tauri::command]
+pub fn restore_profile_from_trash(
+  profile_id: String,
+) -> Result<crate::profile::BrowserProfile, String> {
+  let profiles_dir = ProfileManager::instance().get_profiles_dir();
+  let profile = crate::profile::trash::restore_profile(&profiles_dir, &profile_id)
+    .map_err(|e| format!("Failed to restore profile from trash: {e}"))?;
+
+  // Re-upload to sync when the profile is sync-enabled, then refresh both
+  // the profile list and the trash dialog.
+  crate::sync::queue_profile_sync_if_eligible(&profile);
+  let _ = crate::events::emit_empty("profiles-changed");
+  let _ = crate::events::emit_empty(crate::profile::trash::TRASH_EVENT);
+  Ok(profile)
+}
+
+#[tauri::command]
+pub fn purge_profile_from_trash(profile_id: String) -> Result<(), String> {
+  crate::profile::trash::purge_profile(&profile_id)
+    .map_err(|e| format!("Failed to purge profile from trash: {e}"))?;
+  let _ = crate::events::emit_empty(crate::profile::trash::TRASH_EVENT);
+  Ok(())
+}
+
+#[tauri::command]
+pub fn empty_profile_trash() -> Result<(), String> {
+  crate::profile::trash::empty_trash().map_err(|e| format!("Failed to empty trash: {e}"))?;
+  let _ = crate::events::emit_empty(crate::profile::trash::TRASH_EVENT);
+  Ok(())
 }
 
 lazy_static::lazy_static! {

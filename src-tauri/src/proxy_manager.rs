@@ -1221,77 +1221,340 @@ impl ProxyManager {
       .collect()
   }
 
-  // Parse a single proxy line with format auto-detection
+  /// Build a `ParsedProxyLine` from parts — small shared constructor for the
+  /// many format branches below.
+  fn parsed_with(
+    proxy_type: &str,
+    host: String,
+    port: u16,
+    username: Option<String>,
+    password: Option<String>,
+    original_line: &str,
+  ) -> ParsedProxyLine {
+    ParsedProxyLine {
+      proxy_type: proxy_type.to_string(),
+      host,
+      port,
+      username,
+      password,
+      original_line: original_line.to_string(),
+    }
+  }
+
+  // Parse a single proxy line with format auto-detection.
   fn parse_single_proxy_line(line: &str) -> ProxyParseResult {
-    // Format 1: protocol://username:password@host:port (full URL)
+    // Strip wrapping quotes (some exported lists quote each line).
+    let line = line
+      .strip_prefix('"')
+      .and_then(|s| s.strip_suffix('"'))
+      .unwrap_or(line);
+
+    // Format 1: protocol://… URL (any casing, incl. Shadowsocks SIP002)
     if let Some(result) = Self::try_parse_url_format(line) {
       return result;
     }
 
-    // Try colon-separated formats
-    let parts: Vec<&str> = line.split(':').collect();
+    // Format 2: user:pass@host:port (no scheme)
+    if let Some(result) = Self::try_parse_user_pass_at_host_port(line) {
+      return result;
+    }
 
+    // Format 3: colon-separated (host:port, host:port:user:pass, IPv6, …)
+    Self::try_parse_colon_separated(line)
+  }
+
+  /// Split a "host:port" string, IPv6-bracket aware. The final colon group is
+  /// the port — so bare multi-colon hosts (2001:db8::1:8080) also work.
+  fn parse_host_port(s: &str) -> Option<(String, u16)> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix('[') {
+      let close = rest.find(']')?;
+      let host = &rest[..close];
+      let port = rest
+        .get(close + 1..)?
+        .strip_prefix(':')?
+        .parse::<u16>()
+        .ok()?;
+      return Some((host.to_string(), port));
+    }
+    let colon = s.rfind(':')?;
+    if colon == 0 || colon == s.len() - 1 {
+      return None;
+    }
+    let host = &s[..colon];
+    let port = s[colon + 1..].parse::<u16>().ok()?;
+    Some((host.to_string(), port))
+  }
+
+  /// Detect a bare IPv6 target: `[addr]:port` or `addr:port` where the host
+  /// parses as a real IPv6 address (disambiguates `fe80::1:8080` from the
+  /// ambiguous colon-separated auth formats).
+  fn parse_ipv6_host_port(s: &str) -> Option<(String, u16)> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix('[') {
+      let close = rest.find(']')?;
+      let host = &rest[..close];
+      if host.parse::<std::net::Ipv6Addr>().is_err() {
+        return None;
+      }
+      let port = rest
+        .get(close + 1..)?
+        .strip_prefix(':')?
+        .parse::<u16>()
+        .ok()?;
+      return Some((host.to_string(), port));
+    }
+    let colon = s.rfind(':')?;
+    if colon == 0 || colon == s.len() - 1 {
+      return None;
+    }
+    let host = &s[..colon];
+    if !host.contains(':') || host.parse::<std::net::Ipv6Addr>().is_err() {
+      return None;
+    }
+    let port = s[colon + 1..].parse::<u16>().ok()?;
+    Some((host.to_string(), port))
+  }
+
+  /// Decode a URL-encoded username/password pair, keeping the raw value when
+  /// encoding is broken rather than dropping the credential silently.
+  fn parse_plain_auth(auth: &str) -> (Option<String>, Option<String>) {
+    let decode = |part: &str| -> String {
+      urlencoding::decode(part)
+        .map(|cow| cow.into_owned())
+        .unwrap_or_else(|_| part.to_string())
+    };
+    if let Some(colon_pos) = auth.find(':') {
+      (
+        Some(decode(&auth[..colon_pos])),
+        Some(decode(&auth[colon_pos + 1..])),
+      )
+    } else {
+      (Some(decode(auth)), None)
+    }
+  }
+
+  /// Try to Base64-decode a string and confirm the result is printable ASCII
+  /// (a real credentials blob), so plaintext credentials that happen to be
+  /// valid base64 are only decoded when they make sense.
+  fn try_b64_decode(s: &str) -> Option<String> {
+    use base64::Engine;
+    let s = s.trim();
+    let engines = [
+      base64::engine::general_purpose::URL_SAFE_NO_PAD,
+      base64::engine::general_purpose::STANDARD_NO_PAD,
+    ];
+    let bytes = engines.iter().find_map(|engine| engine.decode(s).ok())?;
+    if !bytes
+      .iter()
+      .all(|b| b.is_ascii_graphic() || *b == b' ' || *b == b'\t')
+    {
+      return None;
+    }
+    String::from_utf8(bytes).ok()
+  }
+
+  /// Shadowsocks (SIP002). Accepts the legacy plaintext form and the two
+  /// base64 variants:
+  ///   ss://aes-256-gcm:secret@host:port
+  ///   ss://base64(method:password)@host:port
+  ///   ss://base64(method:password@host:port)   (fully encoded, optional #tag)
+  ///   ss://base64(host:port:method:password)
+  fn try_parse_ss(rest: &str, line: &str) -> ProxyParseResult {
+    let invalid = || ProxyParseResult::Invalid {
+      line: line.to_string(),
+      reason: "Invalid Shadowsocks URL".to_string(),
+    };
+
+    let decoded = urlencoding::decode(rest)
+      .map(|cow| cow.into_owned())
+      .unwrap_or_else(|_| rest.to_string());
+    let decoded = decoded.split('#').next().unwrap_or(&decoded).trim();
+
+    // method:password@host:port — auth may be plaintext or base64-encoded.
+    if let Some(at_pos) = decoded.rfind('@') {
+      let auth = &decoded[..at_pos];
+      let host_port = &decoded[at_pos + 1..];
+      let (username, password) = Self::parse_ss_auth(auth);
+      return match Self::parse_host_port(host_port) {
+        Some((host, port)) => ProxyParseResult::Parsed(Self::parsed_with(
+          "ss", host, port, username, password, line,
+        )),
+        None => invalid(),
+      };
+    }
+
+    // Fully base64-encoded form (no @ on the surface).
+    if let Some(text) = Self::try_b64_decode(decoded) {
+      let text = text.split('#').next().unwrap_or(&text);
+      if let Some(at_pos) = text.rfind('@') {
+        let auth = &text[..at_pos];
+        let host_port = &text[at_pos + 1..];
+        let (username, password) = Self::parse_ss_auth(auth);
+        return match Self::parse_host_port(host_port) {
+          Some((host, port)) => ProxyParseResult::Parsed(Self::parsed_with(
+            "ss", host, port, username, password, line,
+          )),
+          None => invalid(),
+        };
+      }
+      // base64("host:port:method:password")
+      let parts: Vec<&str> = text.split(':').collect();
+      if parts.len() >= 4 && parts[1].parse::<u16>().is_ok() {
+        return ProxyParseResult::Parsed(Self::parsed_with(
+          "ss",
+          parts[0].to_string(),
+          parts[1].parse().unwrap(),
+          Some(parts[2].to_string()),
+          Some(parts[3..].join(":")),
+          line,
+        ));
+      }
+    }
+
+    invalid()
+  }
+
+  /// Split a Shadowsocks auth segment into (method, password), decoding base64
+  /// where applicable (SIP002) and falling back to plaintext.
+  fn parse_ss_auth(auth: &str) -> (Option<String>, Option<String>) {
+    if let Some(decoded) = Self::try_b64_decode(auth) {
+      if let Some(colon_pos) = decoded.find(':') {
+        return (
+          Some(decoded[..colon_pos].to_string()),
+          Some(decoded[colon_pos + 1..].to_string()),
+        );
+      }
+    }
+    Self::parse_plain_auth(auth)
+  }
+
+  // Try to parse URL format: protocol://username:password@host:port
+  fn try_parse_url_format(line: &str) -> Option<ProxyParseResult> {
+    let invalid = || ProxyParseResult::Invalid {
+      line: line.to_string(),
+      reason: "Invalid URL format".to_string(),
+    };
+
+    // Case-insensitive scheme detection; index into the original line (all
+    // schemes are ASCII) so host casing is preserved.
+    let lower = line.to_ascii_lowercase();
+    let (protocol, rest) = if lower.starts_with("http://") {
+      ("http", &line["http://".len()..])
+    } else if lower.starts_with("https://") {
+      ("https", &line["https://".len()..])
+    } else if lower.starts_with("socks4a://") {
+      ("socks4", &line["socks4a://".len()..])
+    } else if lower.starts_with("socks4://") {
+      ("socks4", &line["socks4://".len()..])
+    } else if lower.starts_with("socks5://") {
+      ("socks5", &line["socks5://".len()..])
+    } else if lower.starts_with("socks://") {
+      ("socks5", &line["socks://".len()..]) // bare "socks" defaults to 5
+    } else if lower.starts_with("shadowsocks://") {
+      ("ss", &line["shadowsocks://".len()..])
+    } else if lower.starts_with("ss://") {
+      ("ss", &line["ss://".len()..])
+    } else {
+      return None;
+    };
+
+    // Shadowsocks uses encoded credentials — handle separately.
+    if protocol == "ss" {
+      return Some(Self::try_parse_ss(rest, line));
+    }
+
+    // Drop any trailing URI fragment (rare, but harmless).
+    let rest = rest.split('#').next().unwrap_or(rest);
+
+    if let Some(at_pos) = rest.rfind('@') {
+      let auth = &rest[..at_pos];
+      let host_port = &rest[at_pos + 1..];
+      let (username, password) = Self::parse_plain_auth(auth);
+      return match Self::parse_host_port(host_port) {
+        Some((host, port)) => Some(ProxyParseResult::Parsed(Self::parsed_with(
+          protocol, host, port, username, password, line,
+        ))),
+        None => Some(invalid()),
+      };
+    }
+
+    match Self::parse_host_port(rest) {
+      Some((host, port)) => Some(ProxyParseResult::Parsed(Self::parsed_with(
+        protocol, host, port, None, None, line,
+      ))),
+      None => Some(invalid()),
+    }
+  }
+
+  // Try to parse: username:password@host:port format (no protocol)
+  fn try_parse_user_pass_at_host_port(line: &str) -> Option<ProxyParseResult> {
+    let at_pos = line.rfind('@')?;
+    let auth = &line[..at_pos];
+    let host_port = &line[at_pos + 1..];
+
+    let (host, port) = Self::parse_host_port(host_port)?;
+    // Require a "user:pass" shape so a bare "host@host:port" isn't misread.
+    let colon_pos = auth.find(':')?;
+    Some(ProxyParseResult::Parsed(Self::parsed_with(
+      "http",
+      host,
+      port,
+      Some(auth[..colon_pos].to_string()),
+      Some(auth[colon_pos + 1..].to_string()),
+      line,
+    )))
+  }
+
+  // Try colon-separated formats (host:port, host:port:user:pass, IPv6, …)
+  fn try_parse_colon_separated(line: &str) -> ProxyParseResult {
+    // Bare IPv6 first so multi-colon hosts aren't read as auth lists.
+    if let Some((host, port)) = Self::parse_ipv6_host_port(line) {
+      return ProxyParseResult::Parsed(Self::parsed_with("http", host, port, None, None, line));
+    }
+
+    let parts: Vec<&str> = line.split(':').collect();
     match parts.len() {
-      // host:port (no auth)
-      2 => {
-        if let Ok(port) = parts[1].parse::<u16>() {
-          return ProxyParseResult::Parsed(ParsedProxyLine {
-            proxy_type: "http".to_string(),
-            host: parts[0].to_string(),
-            port,
-            username: None,
-            password: None,
-            original_line: line.to_string(),
-          });
-        }
-        ProxyParseResult::Invalid {
+      // host:port
+      2 => match parts[1].parse::<u16>() {
+        Ok(port) => ProxyParseResult::Parsed(Self::parsed_with(
+          "http",
+          parts[0].to_string(),
+          port,
+          None,
+          None,
+          line,
+        )),
+        Err(_) => ProxyParseResult::Invalid {
           line: line.to_string(),
           reason: "Invalid port number".to_string(),
-        }
-      }
-      // Could be: host:port:user or user:pass@host (with @ in the middle)
-      3 => {
-        // Try username:password@host:port first
-        if let Some(result) = Self::try_parse_user_pass_at_host_port(line) {
-          return result;
-        }
-        ProxyParseResult::Invalid {
-          line: line.to_string(),
-          reason: "Could not determine format with 3 parts".to_string(),
-        }
-      }
-      // 4 parts: could be host:port:user:pass OR user:pass:host:port
+        },
+      },
+      3 => ProxyParseResult::Invalid {
+        line: line.to_string(),
+        reason: "Could not determine format with 3 parts".to_string(),
+      },
+      // 4 parts: host:port:user:pass OR user:pass:host:port
       4 => {
-        // Try to detect which format
         let port_at_1 = parts[1].parse::<u16>().is_ok();
         let port_at_3 = parts[3].parse::<u16>().is_ok();
-
         match (port_at_1, port_at_3) {
-          // host:port:user:pass
-          (true, false) => {
-            let port = parts[1].parse::<u16>().unwrap();
-            ProxyParseResult::Parsed(ParsedProxyLine {
-              proxy_type: "http".to_string(),
-              host: parts[0].to_string(),
-              port,
-              username: Some(parts[2].to_string()),
-              password: Some(parts[3].to_string()),
-              original_line: line.to_string(),
-            })
-          }
-          // user:pass:host:port
-          (false, true) => {
-            let port = parts[3].parse::<u16>().unwrap();
-            ProxyParseResult::Parsed(ParsedProxyLine {
-              proxy_type: "http".to_string(),
-              host: parts[2].to_string(),
-              port,
-              username: Some(parts[0].to_string()),
-              password: Some(parts[1].to_string()),
-              original_line: line.to_string(),
-            })
-          }
-          // Both could be ports - ambiguous
+          (true, false) => ProxyParseResult::Parsed(Self::parsed_with(
+            "http",
+            parts[0].to_string(),
+            parts[1].parse().unwrap(),
+            Some(parts[2].to_string()),
+            Some(parts[3].to_string()),
+            line,
+          )),
+          (false, true) => ProxyParseResult::Parsed(Self::parsed_with(
+            "http",
+            parts[2].to_string(),
+            parts[3].parse().unwrap(),
+            Some(parts[0].to_string()),
+            Some(parts[1].to_string()),
+            line,
+          )),
           (true, true) => ProxyParseResult::Ambiguous {
             line: line.to_string(),
             possible_formats: vec![
@@ -1299,11 +1562,29 @@ impl ProxyManager {
               "username:password:host:port".to_string(),
             ],
           },
-          // Neither is a valid port
           (false, false) => ProxyParseResult::Invalid {
             line: line.to_string(),
             reason: "No valid port number found".to_string(),
           },
+        }
+      }
+      // 5+ parts: host:port:user:pass with ':' inside the password
+      // (valid IPv6 was already handled above).
+      n if n >= 5 => {
+        if parts[1].parse::<u16>().is_ok() {
+          ProxyParseResult::Parsed(Self::parsed_with(
+            "http",
+            parts[0].to_string(),
+            parts[1].parse().unwrap(),
+            Some(parts[2].to_string()),
+            Some(parts[3..].join(":")),
+            line,
+          ))
+        } else {
+          ProxyParseResult::Invalid {
+            line: line.to_string(),
+            reason: "No valid port number found".to_string(),
+          }
         }
       }
       _ => ProxyParseResult::Invalid {
@@ -1311,113 +1592,6 @@ impl ProxyManager {
         reason: format!("Unexpected format with {} parts", parts.len()),
       },
     }
-  }
-
-  // Try to parse URL format: protocol://username:password@host:port
-  fn try_parse_url_format(line: &str) -> Option<ProxyParseResult> {
-    // Check for protocol prefix using strip_prefix
-    let (protocol, rest) = if let Some(rest) = line.strip_prefix("http://") {
-      ("http", rest)
-    } else if let Some(rest) = line.strip_prefix("https://") {
-      ("https", rest)
-    } else if let Some(rest) = line.strip_prefix("socks4://") {
-      ("socks4", rest)
-    } else if let Some(rest) = line.strip_prefix("socks5://") {
-      ("socks5", rest)
-    } else if let Some(rest) = line.strip_prefix("socks://") {
-      ("socks5", rest) // Default socks to socks5
-    } else if let Some(rest) = line.strip_prefix("ss://") {
-      ("ss", rest)
-    } else {
-      let rest = line.strip_prefix("shadowsocks://")?;
-      ("ss", rest)
-    };
-
-    // Check if there's auth (contains @)
-    if let Some(at_pos) = rest.rfind('@') {
-      let auth = &rest[..at_pos];
-      let host_port = &rest[at_pos + 1..];
-
-      // Parse auth (user:pass)
-      let (username, password) = if let Some(colon_pos) = auth.find(':') {
-        let user = urlencoding::decode(&auth[..colon_pos]).unwrap_or_default();
-        let pass = urlencoding::decode(&auth[colon_pos + 1..]).unwrap_or_default();
-        (Some(user.to_string()), Some(pass.to_string()))
-      } else {
-        (
-          Some(urlencoding::decode(auth).unwrap_or_default().to_string()),
-          None,
-        )
-      };
-
-      // Parse host:port
-      if let Some(colon_pos) = host_port.rfind(':') {
-        let host = &host_port[..colon_pos];
-        if let Ok(port) = host_port[colon_pos + 1..].parse::<u16>() {
-          return Some(ProxyParseResult::Parsed(ParsedProxyLine {
-            proxy_type: protocol.to_string(),
-            host: host.to_string(),
-            port,
-            username,
-            password,
-            original_line: line.to_string(),
-          }));
-        }
-      }
-    } else {
-      // No auth, just host:port
-      if let Some(colon_pos) = rest.rfind(':') {
-        let host = &rest[..colon_pos];
-        if let Ok(port) = rest[colon_pos + 1..].parse::<u16>() {
-          return Some(ProxyParseResult::Parsed(ParsedProxyLine {
-            proxy_type: protocol.to_string(),
-            host: host.to_string(),
-            port,
-            username: None,
-            password: None,
-            original_line: line.to_string(),
-          }));
-        }
-      }
-    }
-
-    Some(ProxyParseResult::Invalid {
-      line: line.to_string(),
-      reason: "Invalid URL format".to_string(),
-    })
-  }
-
-  // Try to parse: username:password@host:port format (no protocol)
-  fn try_parse_user_pass_at_host_port(line: &str) -> Option<ProxyParseResult> {
-    if let Some(at_pos) = line.rfind('@') {
-      let auth = &line[..at_pos];
-      let host_port = &line[at_pos + 1..];
-
-      // Parse auth
-      let (username, password) = {
-        let colon_pos = auth.find(':')?;
-        (
-          Some(auth[..colon_pos].to_string()),
-          Some(auth[colon_pos + 1..].to_string()),
-        )
-      };
-
-      // Parse host:port
-      if let Some(colon_pos) = host_port.rfind(':') {
-        let host = &host_port[..colon_pos];
-        if let Ok(port) = host_port[colon_pos + 1..].parse::<u16>() {
-          return Some(ProxyParseResult::Parsed(ParsedProxyLine {
-            proxy_type: "http".to_string(),
-            host: host.to_string(),
-            port,
-            username,
-            password,
-            original_line: line.to_string(),
-          }));
-        }
-      }
-    }
-    None
   }
 
   // Import proxies from JSON content
@@ -1502,6 +1676,104 @@ impl ProxyManager {
       errors,
       proxies: imported,
     })
+  }
+
+  /// Parse a raw pasted proxy string (any supported format) into a display
+  /// name and settings ready for `create_stored_proxy`. Ambiguous
+  /// `host:port:username:password` vs `username:password:host:port` inputs
+  /// resolve to the former — the de-facto ordering in shared proxy lists.
+  /// Returns a structured `INVALID_PROXY_TEXT` error for empty or
+  /// unrecognized input.
+  fn parse_proxy_text(text: &str) -> Result<(String, ProxySettings), String> {
+    let invalid = || serde_json::json!({ "code": "INVALID_PROXY_TEXT" }).to_string();
+
+    // Take the first non-empty, non-comment line so multi-line pastes work
+    // (extra lines are ignored — import the rest via the import dialog).
+    let line = text
+      .lines()
+      .map(str::trim)
+      .find(|line| !line.is_empty() && !line.starts_with('#'))
+      .ok_or_else(invalid)?;
+
+    let parsed = match Self::parse_single_proxy_line(line) {
+      ProxyParseResult::Parsed(p) => p,
+      ProxyParseResult::Ambiguous { line, .. } => {
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() != 4 {
+          return Err(invalid());
+        }
+        ParsedProxyLine {
+          proxy_type: "http".to_string(),
+          host: parts[0].to_string(),
+          port: parts[1].parse::<u16>().map_err(|_| invalid())?,
+          username: Some(parts[2].to_string()),
+          password: Some(parts[3].to_string()),
+          original_line: line,
+        }
+      }
+      ProxyParseResult::Invalid { .. } => return Err(invalid()),
+    };
+
+    let name = format!("{}:{}", parsed.host, parsed.port);
+    Ok((
+      name,
+      ProxySettings {
+        proxy_type: parsed.proxy_type,
+        host: parsed.host,
+        port: parsed.port,
+        username: parsed.username,
+        password: parsed.password,
+      },
+    ))
+  }
+
+  /// True when two proxies represent the same upstream endpoint (scheme, host,
+  /// port, and credentials) regardless of display name.
+  fn same_endpoint(proxy: &StoredProxy, other: &ProxySettings) -> bool {
+    let settings = &proxy.proxy_settings;
+    settings.proxy_type == other.proxy_type
+      && settings.host == other.host
+      && settings.port == other.port
+      && settings.username == other.username
+      && settings.password == other.password
+  }
+
+  /// Create a stored proxy from a raw pasted proxy string (any supported
+  /// format). Returns the newly created proxy — or the existing one when an
+  /// identical endpoint is already stored, so callers can assign it directly
+  /// without duplicating.
+  pub fn create_proxy_from_text(
+    &self,
+    app_handle: &tauri::AppHandle,
+    text: &str,
+  ) -> Result<StoredProxy, String> {
+    let (base_name, settings) = Self::parse_proxy_text(text)?;
+
+    // Reuse an identical already-stored endpoint instead of duplicating it.
+    {
+      let stored_proxies = self.stored_proxies.lock().unwrap();
+      if let Some(existing) = stored_proxies
+        .values()
+        .find(|p| Self::same_endpoint(p, &settings))
+      {
+        return Ok(existing.clone());
+      }
+    }
+
+    // The display name is host:port; make it unique when another proxy with
+    // a different identity already claims it.
+    let name = {
+      let stored_proxies = self.stored_proxies.lock().unwrap();
+      let mut candidate = base_name.clone();
+      let mut n = 2;
+      while stored_proxies.values().any(|p| p.name == candidate) {
+        candidate = format!("{base_name} ({n})");
+        n += 1;
+      }
+      candidate
+    };
+
+    self.create_stored_proxy(app_handle, name, settings)
   }
 
   // Start a proxy for given proxy settings and associate it with a browser process ID
@@ -3489,6 +3761,185 @@ mod tests {
     match &results[0] {
       ProxyParseResult::Invalid { .. } => {}
       _ => panic!("Expected Invalid"),
+    }
+  }
+
+  #[test]
+  fn test_parse_proxy_text_supported_formats() {
+    // Full URL with auth
+    let (name, settings) = ProxyManager::parse_proxy_text("http://user:pass@proxy.com:8080")
+      .expect("URL proxy should parse");
+    assert_eq!(name, "proxy.com:8080");
+    assert_eq!(settings.proxy_type, "http");
+    assert_eq!(settings.host, "proxy.com");
+    assert_eq!(settings.port, 8080);
+    assert_eq!(settings.username.as_deref(), Some("user"));
+    assert_eq!(settings.password.as_deref(), Some("pass"));
+
+    // Plain host:port
+    let (name, settings) =
+      ProxyManager::parse_proxy_text("10.0.0.1:3128").expect("host:port should parse");
+    assert_eq!(name, "10.0.0.1:3128");
+    assert_eq!(settings.proxy_type, "http");
+    assert!(settings.username.is_none());
+
+    // user:pass@host:port without a scheme
+    let (_, settings) =
+      ProxyManager::parse_proxy_text("admin:secret@myhost:9090").expect("user:pass@host:port");
+    assert_eq!(settings.host, "myhost");
+    assert_eq!(settings.port, 9090);
+    assert_eq!(settings.username.as_deref(), Some("admin"));
+
+    // socks5 URL
+    let (_, settings) =
+      ProxyManager::parse_proxy_text("socks5://u:p@1.2.3.4:1080").expect("socks5 should parse");
+    assert_eq!(settings.proxy_type, "socks5");
+    assert_eq!(settings.host, "1.2.3.4");
+
+    // Multi-line paste picks the first real line, ignores comments
+    let (name, settings) =
+      ProxyManager::parse_proxy_text("\n# rotated private list\n5.6.7.8:443\n1.2.3.4:80\n")
+        .expect("should parse first line");
+    assert_eq!(name, "5.6.7.8:443");
+    assert_eq!(settings.host, "5.6.7.8");
+    assert_eq!(settings.port, 443);
+  }
+
+  #[test]
+  fn test_parse_proxy_text_ambiguous_prefers_host_port_user_pass() {
+    // Both positions look like ports — must resolve to host:port:user:pass
+    let (name, settings) =
+      ProxyManager::parse_proxy_text("1234:5678:9012:3456").expect("ambiguous should resolve");
+    assert_eq!(name, "1234:5678");
+    assert_eq!(settings.host, "1234");
+    assert_eq!(settings.port, 5678);
+    assert_eq!(settings.username.as_deref(), Some("9012"));
+    assert_eq!(settings.password.as_deref(), Some("3456"));
+
+    // The same ordering holds for host:port:user:pass inputs
+    let (_, settings) =
+      ProxyManager::parse_proxy_text("myhost:8080:u:p").expect("4-part should resolve");
+    assert_eq!(settings.host, "myhost");
+    assert_eq!(settings.port, 8080);
+    assert_eq!(settings.username.as_deref(), Some("u"));
+  }
+
+  #[test]
+  fn test_parse_txt_all_formats() {
+    // Uppercase schemes must work
+    let results = ProxyManager::parse_txt_proxies("HTTP://user:pass@Proxy.COM:3128\n");
+    let ProxyParseResult::Parsed(p) = &results[0] else {
+      panic!("expected parsed")
+    };
+    assert_eq!(p.proxy_type, "http");
+    assert_eq!(p.host, "Proxy.COM");
+    assert_eq!(p.port, 3128);
+
+    // SOCKS aliases and variants
+    for (line, expected) in [
+      ("socks://1.2.3.4:1080", "socks5"),
+      ("SOCKS5://1.2.3.4:1080", "socks5"),
+      ("socks4a://1.2.3.4:1081", "socks4"),
+      ("Socks4://1.2.3.4:1081", "socks4"),
+    ] {
+      let results = ProxyManager::parse_txt_proxies(line);
+      let ProxyParseResult::Parsed(p) = &results[0] else {
+        panic!("expected parsed for {line}")
+      };
+      assert_eq!(p.proxy_type, expected);
+    }
+
+    // IPv6: bracket, in-URL, and bare
+    for (line, host, port) in [
+      ("[::1]:8080", "::1", 8080),
+      ("http://[2001:db8::1]:8000", "2001:db8::1", 8000),
+      ("socks5://[fe80::1]:1080", "fe80::1", 1080),
+      ("2001:db8:dead:beef::1:8081", "2001:db8:dead:beef::1", 8081),
+      ("fe80::1:8080", "fe80::1", 8080),
+      ("[::ffff:1.2.3.4]:3128", "::ffff:1.2.3.4", 3128),
+      ("user:pass@[::1]:80", "::1", 80),
+    ] {
+      let results = ProxyManager::parse_txt_proxies(line);
+      let ProxyParseResult::Parsed(p) = &results[0] else {
+        panic!("expected parsed for {line}")
+      };
+      assert_eq!(p.host, host, "host for {line}");
+      assert_eq!(p.port, port, "port for {line}");
+    }
+
+    // host:port:user:pass with ':' inside the password
+    let results = ProxyManager::parse_txt_proxies("1.2.3.4:3128:user:my:pa:ss\n");
+    let ProxyParseResult::Parsed(p) = &results[0] else {
+      panic!("expected parsed")
+    };
+    assert_eq!(p.host, "1.2.3.4");
+    assert_eq!(p.port, 3128);
+    assert_eq!(p.username.as_deref(), Some("user"));
+    assert_eq!(p.password.as_deref(), Some("my:pa:ss"));
+
+    // Quoted line
+    let results = ProxyManager::parse_txt_proxies("\"1.2.3.4:3128\"\n");
+    let ProxyParseResult::Parsed(p) = &results[0] else {
+      panic!("expected parsed")
+    };
+    assert_eq!(p.host, "1.2.3.4");
+  }
+
+  #[test]
+  fn test_parse_shadowsocks_sip002() {
+    // Legacy plaintext
+    let results = ProxyManager::parse_txt_proxies("ss://aes-256-gcm:secret@example.com:8388\n");
+    let ProxyParseResult::Parsed(p) = &results[0] else {
+      panic!("expected parsed")
+    };
+    assert_eq!(p.proxy_type, "ss");
+    assert_eq!(p.host, "example.com");
+    assert_eq!(p.port, 8388);
+    assert_eq!(p.username.as_deref(), Some("aes-256-gcm"));
+    assert_eq!(p.password.as_deref(), Some("secret"));
+
+    // SIP002: base64(method:password)@host:port
+    let results =
+      ProxyManager::parse_txt_proxies("ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388\n");
+    let ProxyParseResult::Parsed(p) = &results[0] else {
+      panic!("expected parsed")
+    };
+    assert_eq!(p.proxy_type, "ss");
+    assert_eq!(p.username.as_deref(), Some("aes-256-gcm"));
+    assert_eq!(p.password.as_deref(), Some("secret"));
+
+    // SIP002: fully base64-encoded with embedded host:port, plus #tag
+    let results = ProxyManager::parse_txt_proxies(
+      "ss://YWVzLTI1Ni1nY206c2VjcmV0QGV4YW1wbGUuY29tOjgzODg#My%20server\n",
+    );
+    let ProxyParseResult::Parsed(p) = &results[0] else {
+      panic!("expected parsed")
+    };
+    assert_eq!(p.host, "example.com");
+    assert_eq!(p.port, 8388);
+    assert_eq!(p.username.as_deref(), Some("aes-256-gcm"));
+    assert_eq!(p.password.as_deref(), Some("secret"));
+
+    // SIP002: base64(host:port:method:password)
+    let results =
+      ProxyManager::parse_txt_proxies("ss://ZXhhbXBsZS5jb206ODM4ODphZXMtMjU2LWdjbTpzZWNyZXQ\n");
+    let ProxyParseResult::Parsed(p) = &results[0] else {
+      panic!("expected parsed")
+    };
+    assert_eq!(p.host, "example.com");
+    assert_eq!(p.port, 8388);
+    assert_eq!(p.username.as_deref(), Some("aes-256-gcm"));
+    assert_eq!(p.password.as_deref(), Some("secret"));
+  }
+
+  #[test]
+  fn test_parse_proxy_text_rejects_invalid() {
+    for bad in ["", "   ", "\n# only a comment\n", "notaproxy", "no-port"] {
+      let err = ProxyManager::parse_proxy_text(bad).expect_err("should reject");
+      assert!(
+        err.starts_with('{'),
+        "expected structured error, got {err:?}"
+      );
     }
   }
 

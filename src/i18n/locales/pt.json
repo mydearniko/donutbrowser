@@ -34,7 +34,8 @@
       "saving": "Salvando…",
       "saved": "Salvo",
       "copied": "Copiado",
-      "learnMore": "Saiba mais"
+      "learnMore": "Saiba mais",
+      "deleteForever": "Excluir permanentemente"
     },
     "status": {
       "active": "Ativo",
@@ -224,7 +225,8 @@
     "newProfile": "Novo",
     "donutLogo": "Logotipo do Donut Browser",
     "scrollGroupsLeft": "Rolar grupos para a esquerda",
-    "scrollGroupsRight": "Rolar grupos para a direita"
+    "scrollGroupsRight": "Rolar grupos para a direita",
+    "openTrash": "Lixeira"
   },
   "profiles": {
     "title": "Perfis",
@@ -293,7 +295,7 @@
     "ephemeralBadge": "Efêmero",
     "bulkDelete": {
       "title": "Excluir perfis selecionados",
-      "description": "Esta ação não pode ser desfeita. Excluirá permanentemente {{count}} perfil(is) e todos os dados associados.",
+      "description": "{{count}} perfil(is) serão movidos para a lixeira. Você pode restaurá-los mais tarde.",
       "confirmButton": "Excluir {{count}} perfil(is)"
     },
     "note": {
@@ -305,7 +307,7 @@
     },
     "delete": {
       "title": "Excluir perfil",
-      "description": "Esta ação não pode ser desfeita. Excluirá permanentemente o perfil \"{{profileName}}\" e todos os seus dados associados.",
+      "description": "O perfil \"{{profileName}}\" será movido para a lixeira. Você pode restaurá-lo mais tarde.",
       "confirmButton": "Excluir perfil"
     },
     "actionBar": {
@@ -362,7 +364,8 @@
       "noProxiesAvailable": "Nenhum proxy ou VPN disponível. Adicione um para rotear o tráfego deste perfil.",
       "search": "Pesquisar proxies ou VPN...",
       "notFound": "Nenhum proxy ou VPN encontrado.",
-      "searchWithCountries": "Pesquisar proxies, VPNs ou países..."
+      "searchWithCountries": "Pesquisar proxies, VPNs ou países...",
+      "searchPaste": "Cole um proxy para adicioná-lo instantaneamente (host:port, socks5://user:pass@host:port)"
     },
     "launchHook": {
       "label": "URL do hook de inicialização",
@@ -911,7 +914,8 @@
       "exportSuccess": "{{count}} itens exportados com sucesso",
       "syncSuccess": "Sincronização concluída com sucesso",
       "profileSynced": "Perfil '{{name}}' sincronizado com sucesso",
-      "cacheCleared": "Cache limpo com sucesso"
+      "cacheCleared": "Cache limpo com sucesso",
+      "proxyCreatedFromPaste": "Proxy {{name}} adicionado e atribuído a este perfil"
     },
     "error": {
       "profileCreateFailed": "Falha ao criar perfil",
@@ -1670,7 +1674,10 @@
     "vpnsHeading": "VPNs",
     "createByCountryHeading": "Criar por país",
     "editAssignedProxy": "Editar proxy atribuído: {{name}}",
-    "proxyPickerLimited": "Mostrando os primeiros {{shown}} de {{total}} resultados. Refine a pesquisa."
+    "proxyPickerLimited": "Mostrando os primeiros {{shown}} de {{total}} resultados. Refine a pesquisa.",
+    "fromPaste": "Do conteúdo colado",
+    "usePastedProxy": "Criar proxy a partir do conteúdo colado e usar neste perfil",
+    "proxiesHeading": "Proxies"
   },
   "dataTableActionBar": {
     "selected": "{{count}} selecionado(s)",
@@ -1828,7 +1835,9 @@
     "syncDeviceIdInvalid": "O ID do dispositivo deve ter de 3 a 128 caracteres e usar apenas letras, números, pontos, sublinhados ou hifens.",
     "syncDeviceNameInvalid": "O nome do dispositivo deve ter de 1 a 80 caracteres e não pode conter caracteres de controle.",
     "syncDeviceIdBusy": "Feche todos os perfis sincronizados e aguarde as transferências ativas terminarem antes de alterar o ID do dispositivo.",
-    "profileSyncPrepareFailed": "Não foi possível preparar este perfil com segurança a partir da sincronização. Verifique sua conexão e tente novamente."
+    "profileSyncPrepareFailed": "Não foi possível preparar este perfil com segurança a partir da sincronização. Verifique sua conexão e tente novamente.",
+    "invalidProxyText": "Isso não parece um proxy válido. Cole algo como host:porta, protocolo://usuário:senha@host:porta ou socks5://host:porta.",
+    "profileAlreadyExists": "Já existe um perfil com este ID."
   },
   "rail": {
     "profiles": "Perfis",
@@ -2067,5 +2076,23 @@
   "wayfernTokenUnavailable": {
     "title": "Token do Wayfern indisponível",
     "description": "Não foi possível atualizar o token hospedado do Wayfern. Os perfis locais e a automação continuam disponíveis, mas os recursos de impressão digital que dependem do token podem ficar limitados."
+  },
+  "trashDialog": {
+    "title": "Lixeira",
+    "description": "{{count}} perfil(is) na lixeira. Perfis excluídos são compactados e podem ser restaurados depois.",
+    "empty": "A lixeira está vazia.",
+    "restored": "Perfil restaurado",
+    "restoredDescription": "{{name}} foi restaurado da lixeira.",
+    "purged": "Perfil excluído permanentemente",
+    "purgedDescription": "{{name}} foi excluído permanentemente.",
+    "emptied": "Lixeira esvaziada",
+    "deletedAt": "Excluído {{date}}",
+    "compressedFrom": "comprimido de {{original}}",
+    "restore": "Restaurar",
+    "emptyTrash": "Esvaziar lixeira",
+    "purgeTitle": "Excluir \"{{name}}\" permanentemente?",
+    "purgeDescription": "Isso excluirá permanentemente o perfil e seus dados compactados. Esta ação não pode ser desfeita.",
+    "purgeAllTitle": "Excluir tudo da lixeira?",
+    "purgeAllDescription": "Todos os perfis na lixeira serão excluídos permanentemente. Esta ação não pode ser desfeita."
   }
 }

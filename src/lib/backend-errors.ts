@@ -41,7 +41,9 @@ export type BackendErrorCode =
   | "CAMOUFOX_IMPORT_DEPRECATED"
   | "UPDATE_CHECKSUMS_UNAVAILABLE"
   | "UPDATE_CHECKSUM_MISMATCH"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  | "INVALID_PROXY_TEXT"
+  | "PROFILE_ALREADY_EXISTS";
 
 export interface BackendError {
   code: BackendErrorCode;
@@ -170,6 +172,10 @@ export function translateBackendError(t: TFunction, err: unknown): string {
       return t("backendErrors.internal", {
         detail: parsed.params?.detail ?? "",
       });
+    case "INVALID_PROXY_TEXT":
+      return t("backendErrors.invalidProxyText");
+    case "PROFILE_ALREADY_EXISTS":
+      return t("backendErrors.profileAlreadyExists");
     default:
       return err instanceof Error ? err.message : String(err);
   }

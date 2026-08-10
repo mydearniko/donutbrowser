@@ -42,6 +42,7 @@ import { SyncAllDialog } from "@/components/sync-all-dialog";
 import { SyncConfigDialog } from "@/components/sync-config-dialog";
 import { SyncFollowerDialog } from "@/components/sync-follower-dialog";
 import { ThankYouDialog } from "@/components/thank-you-dialog";
+import { TrashDialog } from "@/components/trash-dialog";
 import { WayfernConfigDialog } from "@/components/wayfern-config-dialog";
 import { WayfernTermsDialog } from "@/components/wayfern-terms-dialog";
 import { WelcomeDialog } from "@/components/welcome-dialog";
@@ -310,6 +311,7 @@ export default function Home() {
   const [currentProfileForSync, setCurrentProfileForSync] =
     useState<BrowserProfile | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [trashDialogOpen, setTrashDialogOpen] = useState(false);
   // Owned by page.tsx so the command palette can request opening the profile
   // info dialog. ProfilesDataTable consumes it through controlled props.
   const [profileInfoDialog, setProfileInfoDialog] =
@@ -1672,6 +1674,9 @@ export default function Home() {
         onCreateGroup={() => {
           setCreateGroupDialogOpen(true);
         }}
+        onOpenTrash={() => {
+          setTrashDialogOpen(true);
+        }}
         searchQuery={searchQuery}
         onSearchQueryChange={setSearchQuery}
         groups={groupsData}
@@ -2022,6 +2027,13 @@ export default function Home() {
         runningProfiles={runningProfiles}
         onCopyComplete={() => {
           setSelectedProfilesForCookies([]);
+        }}
+      />
+
+      <TrashDialog
+        open={trashDialogOpen}
+        onClose={() => {
+          setTrashDialogOpen(false);
         }}
       />
 

@@ -34,7 +34,8 @@
       "saving": "저장 중…",
       "saved": "저장됨",
       "copied": "복사됨",
-      "learnMore": "자세히 알아보기"
+      "learnMore": "자세히 알아보기",
+      "deleteForever": "영구 삭제"
     },
     "status": {
       "active": "활성",
@@ -224,7 +225,8 @@
     "newProfile": "새로 만들기",
     "donutLogo": "Donut Browser 로고",
     "scrollGroupsLeft": "그룹 왼쪽으로 스크롤",
-    "scrollGroupsRight": "그룹 오른쪽으로 스크롤"
+    "scrollGroupsRight": "그룹 오른쪽으로 스크롤",
+    "openTrash": "휴지통"
   },
   "profiles": {
     "title": "프로필",
@@ -293,7 +295,7 @@
     "ephemeralBadge": "임시",
     "bulkDelete": {
       "title": "선택한 프로필 삭제",
-      "description": "이 작업은 취소할 수 없습니다. {{count}}개의 프로필과 관련된 모든 데이터가 영구적으로 삭제됩니다.",
+      "description": "{{count}}개 프로필이 휴지통으로 이동됩니다. 나중에 복원할 수 있습니다.",
       "confirmButton": "{{count}}개 프로필 삭제"
     },
     "note": {
@@ -305,7 +307,7 @@
     },
     "delete": {
       "title": "프로필 삭제",
-      "description": "이 작업은 취소할 수 없습니다. 프로필 \"{{profileName}}\"과 관련된 모든 데이터가 영구적으로 삭제됩니다.",
+      "description": "프로필 \"{{profileName}}\"이(가) 휴지통으로 이동됩니다. 나중에 복원할 수 있습니다.",
       "confirmButton": "프로필 삭제"
     },
     "actionBar": {
@@ -362,7 +364,8 @@
       "noProxiesAvailable": "사용할 수 있는 프록시 또는 VPN이 없습니다. 이 프로필의 트래픽을 라우팅하려면 추가하세요.",
       "search": "프록시 또는 VPN 검색...",
       "notFound": "프록시 또는 VPN을 찾을 수 없습니다.",
-      "searchWithCountries": "프록시, VPN 또는 국가 검색..."
+      "searchWithCountries": "프록시, VPN 또는 국가 검색...",
+      "searchPaste": "프록시를 붙여넣으면 즉시 추가됩니다 (host:port, socks5://user:pass@host:port)"
     },
     "launchHook": {
       "label": "실행 후크 URL",
@@ -911,7 +914,8 @@
       "exportSuccess": "{{count}}개 항목을 내보냈습니다",
       "syncSuccess": "동기화가 완료되었습니다",
       "profileSynced": "프로필 '{{name}}'이(가) 동기화되었습니다",
-      "cacheCleared": "캐시가 지워졌습니다"
+      "cacheCleared": "캐시가 지워졌습니다",
+      "proxyCreatedFromPaste": "프록시 {{name}}을(를) 추가하고 이 프로필에 할당했습니다"
     },
     "error": {
       "profileCreateFailed": "프로필 생성 실패",
@@ -1670,7 +1674,10 @@
     "vpnsHeading": "VPN",
     "createByCountryHeading": "국가별 생성",
     "editAssignedProxy": "할당된 프록시 편집: {{name}}",
-    "proxyPickerLimited": "{{total}}개 결과 중 처음 {{shown}}개를 표시합니다. 검색어를 구체화하세요."
+    "proxyPickerLimited": "{{total}}개 결과 중 처음 {{shown}}개를 표시합니다. 검색어를 구체화하세요.",
+    "fromPaste": "붙여넣기에서 생성",
+    "usePastedProxy": "붙여넣은 내용으로 프록시를 만들어 이 프로필에 할당",
+    "proxiesHeading": "프록시"
   },
   "dataTableActionBar": {
     "selected": "{{count}}개 선택됨",
@@ -1828,7 +1835,9 @@
     "syncDeviceIdInvalid": "기기 ID는 3~128자여야 하며 영문자, 숫자, 마침표, 밑줄 또는 하이픈만 사용할 수 있습니다.",
     "syncDeviceNameInvalid": "기기 이름은 1~80자여야 하며 제어 문자를 포함할 수 없습니다.",
     "syncDeviceIdBusy": "기기 ID를 변경하기 전에 동기화된 프로필을 모두 닫고 진행 중인 동기화 전송이 끝날 때까지 기다리세요.",
-    "profileSyncPrepareFailed": "동기화에서 이 프로필을 안전하게 준비할 수 없습니다. 연결을 확인한 후 다시 시도하세요."
+    "profileSyncPrepareFailed": "동기화에서 이 프로필을 안전하게 준비할 수 없습니다. 연결을 확인한 후 다시 시도하세요.",
+    "invalidProxyText": "유효한 프록시 형식이 아닙니다. host:port, 프로토콜://사용자:비밀번호@host:port, socks5://host:port 형식으로 붙여넣으세요.",
+    "profileAlreadyExists": "이 ID를 가진 프로필이 이미 있습니다."
   },
   "rail": {
     "profiles": "프로필",
@@ -2067,5 +2076,23 @@
   "wayfernTokenUnavailable": {
     "title": "Wayfern 토큰을 사용할 수 없음",
     "description": "호스팅된 Wayfern 토큰을 새로 고칠 수 없습니다. 로컬 프로필과 자동화는 계속 사용할 수 있지만 토큰 기반 지문 기능이 제한될 수 있습니다."
+  },
+  "trashDialog": {
+    "title": "휴지통",
+    "description": "휴지통에 {{count}}개 프로필이 있습니다. 삭제된 프로필은 압축되어 나중에 복원할 수 있습니다.",
+    "empty": "휴지통이 비어 있습니다.",
+    "restored": "프로필을 복원했습니다",
+    "restoredDescription": "휴지통에서 {{name}}을(를) 복원했습니다.",
+    "purged": "프로필을 영구 삭제했습니다",
+    "purgedDescription": "{{name}}을(를) 영구 삭제했습니다.",
+    "emptied": "휴지통을 비웠습니다",
+    "deletedAt": "삭제됨: {{date}}",
+    "compressedFrom": "{{original}}에서 압축됨",
+    "restore": "복원",
+    "emptyTrash": "휴지통 비우기",
+    "purgeTitle": "\"{{name}}\"을(를) 영구 삭제할까요?",
+    "purgeDescription": "프로필과 압축된 데이터를 영구적으로 삭제합니다. 이 작업은 취소할 수 없습니다.",
+    "purgeAllTitle": "휴지통의 모든 항목을 삭제할까요?",
+    "purgeAllDescription": "휴지통의 모든 프로필이 영구 삭제됩니다. 이 작업은 취소할 수 없습니다."
   }
 }

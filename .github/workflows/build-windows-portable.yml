@@ -1,0 +1,172 @@
+# Build the Windows x64 portable ZIP entirely in GitHub Actions.
+#
+# Design goals:
+# - "Fastest possible": no installer bundling (NSIS/MSI is the slow part of a
+#   `tauri build`) — only the two binaries are produced, and everything
+#   upstream is cached hard.
+# - "Max caching, free tier only": Swatinem rust-cache restores the MSVC
+#   target dir + registry (the 10 GB free repo-cache budget — the big win is
+#   that rebuilds only compile changed crates), pnpm store via setup-node, and
+#   the Next.js build cache. Standard `windows-latest` hosted runner only, all
+#   actions free, no paid services.
+#
+# Trigger: workflow_dispatch for on-demand portable builds (uploads to
+# transfer.stickypiston.co unless disabled), plus a path-filtered push build on
+# main that publishes the ZIP as an Actions artifact.
+
+name: Build Windows Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_to_transfer:
+        description: "Upload the ZIP to transfer.stickypiston.co (3-day retention)"
+        type: boolean
+        default: true
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "scripts/**"
+      - ".github/workflows/build-windows-portable.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-portable
+  cancel-in-progress: true
+
+env:
+  NEXT_PUBLIC_TURNSTILE: ${{ secrets.NEXT_PUBLIC_TURNSTILE }}
+
+jobs:
+  build-windows-portable:
+    name: "Windows x64 portable"
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Setup Rust (x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workdir: ./src-tauri
+          # Share one cache across all runs of this workflow so a source-only
+          # change reuses the compiled dependency tree.
+          shared-key: windows-portable
+          cache-on-failure: "true"
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: ${{ runner.os }}-next-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-next-
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        shell: bash
+        run: pnpm exec next build
+
+      - name: Build sidecar binary (donut-proxy)
+        shell: bash
+        working-directory: ./src-tauri
+        run: |
+          cargo build --locked --profile release-portable --target x86_64-pc-windows-msvc --bin donut-proxy
+
+      - name: Stage sidecar for Tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          cp "src-tauri/target/x86_64-pc-windows-msvc/release-portable/donut-proxy.exe" \
+            "src-tauri/binaries/donut-proxy-x86_64-pc-windows-msvc.exe"
+
+      - name: Build app binary (donutbrowser)
+        shell: bash
+        working-directory: ./src-tauri
+        run: |
+          cargo build --locked --profile release-portable --target x86_64-pc-windows-msvc --bin donutbrowser
+
+      - name: Stage portable folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/x86_64-pc-windows-msvc/release-portable"
+          for f in "$APP/donutbrowser.exe" "$APP/donut-proxy.exe" "$APP/WebView2Loader.dll"; do
+            if [[ ! -s "$f" ]]; then
+              echo "missing portable runtime file: $f" >&2
+              exit 1
+            fi
+          done
+          mkdir -p Donut-Portable
+          touch Donut-Portable/.portable
+          cp "$APP/donutbrowser.exe" Donut-Portable/Donut.exe
+          cp "$APP/donut-proxy.exe" Donut-Portable/donut-proxy.exe
+          cp "$APP/WebView2Loader.dll" Donut-Portable/WebView2Loader.dll
+
+      - name: Package portable ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(node -p 'require("./package.json").version')"
+          ZIP="Donut_${APP_VERSION}_x64-portable.zip"
+          printf '%s' "$ZIP" > /tmp/portable-zip-name
+          7z a -tzip -mx=5 "$ZIP" Donut-Portable
+          7z t "$ZIP"
+
+      - name: Print artifact checksum
+        shell: bash
+        run: |
+          ZIP="$(cat /tmp/portable-zip-name)"
+          echo "Artifact: $ZIP"
+          echo "SHA-256: $(sha256sum "$ZIP" | awk '{print $1}')"
+          echo "Size (bytes): $(wc -c < "$ZIP")"
+
+      - name: Upload to transfer.stickypiston.co
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.upload_to_transfer == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$(cat /tmp/portable-zip-name)"
+          URL="$(curl -sS --upload-file "$ZIP" --max-time 900 https://transfer.stickypiston.co/)"
+          URL="$(printf '%s' "$URL" | sed 's#[[:space:]]*$##')"
+          echo "PORTABLE_ZIP_URL=$URL" >> "$GITHUB_ENV"
+          echo "Download: $URL"
+          echo "SHA-256: $(sha256sum "$ZIP" | awk '{print $1}')"
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Donut-Win-x64-Portable
+          path: Donut_*.zip
+          retention-days: 7
+          if-no-files-found: error

@@ -34,7 +34,8 @@
       "saving": "正在保存…",
       "saved": "已保存",
       "copied": "已复制",
-      "learnMore": "了解更多"
+      "learnMore": "了解更多",
+      "deleteForever": "永久删除"
     },
     "status": {
       "active": "活跃",
@@ -224,7 +225,8 @@
     "newProfile": "新建",
     "donutLogo": "Donut Browser 标识",
     "scrollGroupsLeft": "向左滚动分组",
-    "scrollGroupsRight": "向右滚动分组"
+    "scrollGroupsRight": "向右滚动分组",
+    "openTrash": "回收站"
   },
   "profiles": {
     "title": "配置文件",
@@ -293,7 +295,7 @@
     "ephemeralBadge": "临时",
     "bulkDelete": {
       "title": "删除所选配置文件",
-      "description": "此操作无法撤销。这将永久删除 {{count}} 个配置文件及其关联的所有数据。",
+      "description": "{{count}} 个配置文件将移到回收站。之后可以恢复。",
       "confirmButton": "删除 {{count}} 个配置文件"
     },
     "note": {
@@ -305,7 +307,7 @@
     },
     "delete": {
       "title": "删除配置文件",
-      "description": "此操作无法撤销。这将永久删除配置文件 \"{{profileName}}\" 及其关联的所有数据。",
+      "description": "配置文件“{{profileName}}”将移到回收站。之后可以恢复。",
       "confirmButton": "删除配置文件"
     },
     "actionBar": {
@@ -362,7 +364,8 @@
       "noProxiesAvailable": "没有可用的代理或VPN。添加一个来路由此配置文件的流量。",
       "search": "搜索代理或 VPN...",
       "notFound": "未找到代理或 VPN。",
-      "searchWithCountries": "搜索代理、VPN 或国家/地区..."
+      "searchWithCountries": "搜索代理、VPN 或国家/地区...",
+      "searchPaste": "粘贴代理即可立即添加 (host:port, socks5://user:pass@host:port)"
     },
     "launchHook": {
       "label": "启动钩子 URL",
@@ -911,7 +914,8 @@
       "exportSuccess": "成功导出 {{count}} 个项目",
       "syncSuccess": "同步成功完成",
       "profileSynced": "配置文件 '{{name}}' 同步成功",
-      "cacheCleared": "缓存清除成功"
+      "cacheCleared": "缓存清除成功",
+      "proxyCreatedFromPaste": "已添加代理 {{name}} 并分配给此配置"
     },
     "error": {
       "profileCreateFailed": "创建配置文件失败",
@@ -1670,7 +1674,10 @@
     "vpnsHeading": "VPN",
     "createByCountryHeading": "按国家创建",
     "editAssignedProxy": "编辑已分配的代理：{{name}}",
-    "proxyPickerLimited": "显示前 {{shown}} / {{total}} 个结果。请缩小搜索范围。"
+    "proxyPickerLimited": "显示前 {{shown}} / {{total}} 个结果。请缩小搜索范围。",
+    "fromPaste": "从粘贴创建",
+    "usePastedProxy": "从粘贴内容创建代理并用于此配置",
+    "proxiesHeading": "代理"
   },
   "dataTableActionBar": {
     "selected": "已选择 {{count}}",
@@ -1828,7 +1835,9 @@
     "syncDeviceIdInvalid": "设备 ID 必须为 3–128 个字符，且只能使用字母、数字、点、下划线或连字符。",
     "syncDeviceNameInvalid": "设备名称必须为 1–80 个字符，且不能包含控制字符。",
     "syncDeviceIdBusy": "更改设备 ID 前，请关闭所有已同步的配置文件并等待当前同步传输完成。",
-    "profileSyncPrepareFailed": "无法安全地从同步数据准备此配置文件。请检查网络连接后重试。"
+    "profileSyncPrepareFailed": "无法安全地从同步数据准备此配置文件。请检查网络连接后重试。",
+    "invalidProxyText": "看起来不是有效的代理。请粘贴类似 host:port、协议://用户名:密码@host:port 或 socks5://host:port 的内容。",
+    "profileAlreadyExists": "已存在具有此 ID 的配置文件。"
   },
   "rail": {
     "profiles": "配置文件",
@@ -2067,5 +2076,23 @@
   "wayfernTokenUnavailable": {
     "title": "Wayfern令牌不可用",
     "description": "无法刷新托管的Wayfern令牌。本地配置文件和自动化仍然可用，但依赖令牌的指纹功能可能会受到限制。"
+  },
+  "trashDialog": {
+    "title": "回收站",
+    "description": "回收站中有 {{count}} 个配置文件。已删除的配置文件会被压缩，之后可以恢复。",
+    "empty": "回收站是空的。",
+    "restored": "已恢复配置文件",
+    "restoredDescription": "已从回收站恢复 {{name}}。",
+    "purged": "已永久删除配置文件",
+    "purgedDescription": "已永久删除 {{name}}。",
+    "emptied": "已清空回收站",
+    "deletedAt": "删除于 {{date}}",
+    "compressedFrom": "由 {{original}} 压缩",
+    "restore": "恢复",
+    "emptyTrash": "清空回收站",
+    "purgeTitle": "要永久删除“{{name}}”吗？",
+    "purgeDescription": "这将永久删除该配置文件及其压缩数据。此操作无法撤消。",
+    "purgeAllTitle": "要删除回收站中的所有内容吗？",
+    "purgeAllDescription": "回收站中的所有配置文件都将被永久删除。此操作无法撤消。"
   }
 }

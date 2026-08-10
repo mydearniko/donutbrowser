@@ -266,6 +266,7 @@ interface TableMeta {
   checkingProfileId: string | null;
   proxyCheckResults: Record<string, ProxyCheckResult>;
   onEditProxy: (proxy: StoredProxy) => void;
+  onCreateProxyFromText: (profileId: string, text: string) => Promise<void>;
 
   // VPN selector state
   vpnConfigs: VpnConfig[];
@@ -1037,6 +1038,45 @@ function matchesPickerQuery(query: string, values: Array<string | number>) {
   return tokens.every((token) => searchable.includes(token));
 }
 
+const PROXY_SCHEME_RE =
+  /^(?:http|https|socks4a?|socks5|socks|shadowsocks|ss):\/\//i;
+
+// Heuristic for "the user pasted a raw proxy string": host:port, a URL,
+// user:pass@host:port, host:port:user:pass, ... Every real format is a
+// single token containing a colon with a URL scheme or a numeric port. This
+// only decides whether to offer the create-from-paste action — the backend
+// parser is the source of truth for validity.
+function looksLikePastedProxy(text: string): boolean {
+  const value = text.trim().replace(/^"|"$/g, "");
+  if (!value || /\s/.test(value)) return false;
+  if (!value.includes(":")) return false;
+  if (PROXY_SCHEME_RE.test(value)) return true;
+  if (/:\d+$/.test(value)) return true; // host:port, user:pass@host:port, [::1]:port
+  const parts = value.split(":");
+  if (parts.length === 4) {
+    const isPort = (s: string) =>
+      /^\d+$/.test(s) && Number(s) >= 1 && Number(s) <= 65535;
+    // host:port:user:pass or user:pass:host:port
+    return isPort(parts[1]) || isPort(parts[3]);
+  }
+  return false;
+}
+
+// Decide whether `text` is a raw paste worth auto-creating (or offering the
+// create-from-paste action). Returns the cleaned proxy string, or null when
+// the text isn't a usable proxy or exactly matches an existing name.
+function pastedProxyCandidate(
+  proxies: StoredProxy[],
+  text: string,
+): string | null {
+  const value = text.trim().replace(/^"|"$/g, "");
+  if (!looksLikePastedProxy(value)) return null;
+  if (proxies.some((p) => p.name.toLowerCase() === value.toLowerCase())) {
+    return null;
+  }
+  return value;
+}
+
 function ProfileProxyPicker({
   profile,
   meta,
@@ -1079,26 +1119,79 @@ function ProfileProxyPicker({
       ),
     [meta.vpnConfigs, query],
   );
-  const visibleProxies = matchingProxies.slice(0, PROFILE_PROXY_PICKER_LIMIT);
+  const visibleProxies = React.useMemo(
+    () =>
+      matchingProxies
+        .slice(0, PROFILE_PROXY_PICKER_LIMIT)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [matchingProxies],
+  );
   const visibleVpns = matchingVpns.slice(0, PROFILE_PROXY_PICKER_LIMIT);
   const totalMatches = matchingProxies.length + matchingVpns.length;
   const shownMatches = visibleProxies.length + visibleVpns.length;
+
+  // Offer create-from-paste when the field holds something that looks like a
+  // raw proxy (typed or pasted) rather than an existing proxy's name.
+  const pasteCandidate = pastedProxyCandidate(meta.storedProxies, query.trim());
+
+  // Pasting a proxy acts immediately: create it (or select the matching
+  // stored proxy) and assign it to the profile — no extra click needed.
+  // The picker closes itself once the assignment completes.
+  const handlePaste = React.useCallback(
+    (event: React.ClipboardEvent<HTMLInputElement>) => {
+      const text = event.clipboardData.getData("text").trim();
+      const candidate = pastedProxyCandidate(meta.storedProxies, text);
+      if (candidate) {
+        setQuery(candidate);
+        void meta.onCreateProxyFromText(profile.id, candidate);
+        return;
+      }
+      const existing = meta.storedProxies.find(
+        (p) => p.name.toLowerCase() === text.toLowerCase(),
+      );
+      if (existing && text) {
+        void meta.handleProxySelection(profile.id, existing.id);
+      }
+    },
+    [meta, profile.id],
+  );
 
   return (
     <Command shouldFilter={false}>
       <CommandInput
         value={query}
         onValueChange={setQuery}
+        onPaste={handlePaste}
         placeholder={
           meta.canCreateLocationProxy
             ? meta.t("createProfile.proxy.searchWithCountries")
-            : meta.t("createProfile.proxy.search")
+            : meta.t("createProfile.proxy.searchPaste")
         }
         onFocus={() => {
           if (meta.canCreateLocationProxy) void meta.loadCountries();
         }}
       />
       <CommandList>
+        {pasteCandidate && (
+          <CommandGroup heading={meta.t("profileTable.fromPaste")}>
+            <CommandItem
+              value="__paste__"
+              onSelect={() =>
+                void meta.onCreateProxyFromText(profile.id, pasteCandidate)
+              }
+            >
+              <LuPlus className="mr-2 size-4" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">
+                  {meta.t("profileTable.usePastedProxy")}
+                </span>
+                <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                  {pasteCandidate}
+                </span>
+              </span>
+            </CommandItem>
+          </CommandGroup>
+        )}
         <CommandGroup>
           {effectiveProxy && !effectiveVpn && (
             <CommandItem
@@ -1130,35 +1223,39 @@ function ProfileProxyPicker({
             />
             {meta.t("common.labels.none")}
           </CommandItem>
-          {visibleProxies.map((proxy) => {
-            const settings = proxy.proxy_settings;
-            return (
-              <CommandItem
-                key={proxy.id}
-                value={proxy.id}
-                onSelect={() =>
-                  void meta.handleProxySelection(profile.id, proxy.id)
-                }
-              >
-                <LuCheck
-                  className={cn(
-                    "mr-2 size-4 shrink-0",
-                    effectiveProxyId === proxy.id && !effectiveVpn
-                      ? "opacity-100"
-                      : "opacity-0",
-                  )}
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{proxy.name}</span>
-                  <span className="block truncate font-mono text-[10px] text-muted-foreground">
-                    {settings.proxy_type.toUpperCase()} · {settings.host}:
-                    {settings.port}
-                  </span>
-                </span>
-              </CommandItem>
-            );
-          })}
         </CommandGroup>
+        {visibleProxies.length > 0 && (
+          <CommandGroup heading={meta.t("profileTable.proxiesHeading")}>
+            {visibleProxies.map((proxy) => {
+              const settings = proxy.proxy_settings;
+              return (
+                <CommandItem
+                  key={proxy.id}
+                  value={proxy.id}
+                  onSelect={() =>
+                    void meta.handleProxySelection(profile.id, proxy.id)
+                  }
+                >
+                  <LuCheck
+                    className={cn(
+                      "mr-2 size-4 shrink-0",
+                      effectiveProxyId === proxy.id && !effectiveVpn
+                        ? "opacity-100"
+                        : "opacity-0",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{proxy.name}</span>
+                    <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                      {settings.proxy_type.toUpperCase()} · {settings.host}:
+                      {settings.port}
+                    </span>
+                  </span>
+                </CommandItem>
+              );
+            })}
+          </CommandGroup>
+        )}
         {visibleVpns.length > 0 && (
           <CommandGroup heading={meta.t("profileTable.vpnsHeading")}>
             {visibleVpns.map((vpn) => (
@@ -1892,6 +1989,24 @@ export function ProfilesDataTable({
     [handleProxySelection],
   );
 
+  const handleCreateProxyFromText = React.useCallback(
+    async (profileId: string, text: string) => {
+      try {
+        const proxy = await invoke<StoredProxy>("create_proxy_from_text", {
+          text,
+        });
+        await handleProxySelection(profileId, proxy.id);
+        showSuccessToast(
+          t("toasts.success.proxyCreatedFromPaste", { name: proxy.name }),
+        );
+      } catch (error) {
+        console.error("Failed to create proxy from paste:", error);
+        showErrorToast(translateBackendError(t, error));
+      }
+    },
+    [handleProxySelection, t],
+  );
+
   // Use shared browser state hook
   const browserState = useBrowserState(
     profiles,
@@ -2395,6 +2510,7 @@ export function ProfilesDataTable({
         setOpenProxySelectorFor(null);
         setEditingProxy(proxy);
       },
+      onCreateProxyFromText: handleCreateProxyFromText,
 
       // VPN selector state
       vpnConfigs,
@@ -2520,6 +2636,7 @@ export function ProfilesDataTable({
       countries,
       loadCountries,
       handleCreateCountryProxy,
+      handleCreateProxyFromText,
       isProfileLocked,
       getLockInfo,
       getProfileSyncInfo,
