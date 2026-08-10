@@ -80,7 +80,7 @@ jobs:
           # without an explicit `workspaces` mapping the target dir is never
           # cached (each run is a full cold compile).
           workspaces: |
-            ./src-tauri -> ./src-tauri/target
+            ./src-tauri -> target
           # Share one cache across all runs so a source-only change reuses
           # the compiled dependency tree.
           shared-key: windows-portable
