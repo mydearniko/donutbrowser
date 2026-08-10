@@ -64,9 +64,13 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
 
+      - name: Disable git core.autocrlf on Windows
+        run: git config --global core.autocrlf false
+
       - name: Setup Rust (x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc
 
       - name: Cache Rust build
