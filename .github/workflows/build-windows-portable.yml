@@ -83,11 +83,14 @@ jobs:
             ./src-tauri -> target
           # Share one cache across all runs so a source-only change reuses
           # the compiled dependency tree.
-          shared-key: windows-portable-v2
+          shared-key: windows-portable-v3
           cache-on-failure: "true"
           # Also cache the workspace's own crates (donutbrowser_lib,
           # donut-proxy) so unchanged crates skip recompilation on rebuilds.
           cache-workspace-crates: "true"
+          # Cache every crate unconditionally; the workspace-crate
+          # classification alone still left donutbrowser_lib recompiling.
+          cache-all-crates: "true"
 
       - name: Cache Next.js build
         uses: actions/cache@v4
