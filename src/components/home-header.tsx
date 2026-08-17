@@ -1,7 +1,6 @@
 "use client";
 
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GoPlus } from "react-icons/go";
 import {
@@ -19,17 +18,13 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
-// Any interactive control (buttons, links, inputs) must NOT start a window
-// drag when pressed — otherwise the drag hands the pointer to the OS
-// window-move loop and the control's click never fires (e.g. the "+ New"
-// button requiring a double-click, and un-maximizing on Windows).
-const isInteractiveTarget = (target: EventTarget | null): boolean => {
-  if (!(target instanceof Element)) return false;
-  const el = target.closest(
-    "button, a, [role='button'], input, select, textarea, [contenteditable=''], [contenteditable='true']",
-  );
-  return el !== null;
-};
+// The whole titlebar is a native window-drag surface via Tauri's
+// `data-tauri-drag-region="deep"` attribute: any non-clickable pixel
+// (gaps, the title, empty padding) drags the undecorated Windows window,
+// while clickable controls (buttons, inputs, links) block the drag and
+// keep receiving clicks — handled entirely by the injected drag script,
+// no JS/IPC round-trip. Double-clicking empty titlebar space also
+// toggles maximize natively.
 
 const ALL_FILTER_ID = "__all__";
 const UNGROUPED_FILTER_ID = "__ungrouped__";
@@ -71,27 +66,6 @@ const HomeHeader = ({
   const isMacOS = platform === "macos";
   const showProfileToolbar = !pageTitle;
 
-  // Drag the window by any empty pixel of the titlebar. startDragging must be
-  // called synchronously from within the pointer event — deferring it (timeout
-  // or pointermove) lets the native move loop slip past the original mouse-down
-  // and the window never starts moving on undecorated (Windows) windows.
-  // Interactive controls are excluded above, so clicks still reach them.
-  const handlePointerDown = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      if (e.button !== 0) return;
-      if (isInteractiveTarget(e.target)) return;
-
-      // Double-click on the empty titlebar area toggles maximize.
-      if (e.detail === 2) {
-        void getCurrentWindow().toggleMaximize();
-        return;
-      }
-
-      void getCurrentWindow().startDragging();
-    },
-    [],
-  );
-
   // Horizontal scroll fades for the group filter strip — when the user
   // has more groups than fit, the right edge fades to hint at overflow.
   const groupsScrollRef = useRef<HTMLDivElement | null>(null);
@@ -127,7 +101,7 @@ const HomeHeader = ({
 
   return (
     <div
-      onPointerDown={handlePointerDown}
+      data-tauri-drag-region="deep"
       className={cn(
         "flex h-11 items-center gap-2 border-b border-border bg-card pl-3 select-none",
         // Windows: WindowDragArea renders three 44px native-style controls
