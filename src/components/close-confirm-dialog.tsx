@@ -20,13 +20,19 @@ export function CloseConfirmDialog() {
 
   useEffect(() => {
     const unlistenPromise = listen("close-confirm-requested", () => {
-      void invoke("log_frontend_event", { kind: "closeconfirm.opened" });
+      void invoke("log_frontend_event", { kind: "closeconfirm.opened-tauri" });
       setIsOpen(true);
     });
+    const handleDom = () => {
+      void invoke("log_frontend_event", { kind: "closeconfirm.opened-dom" });
+      setIsOpen(true);
+    };
+    window.addEventListener("donut:close-confirm-requested", handleDom);
     return () => {
       void unlistenPromise.then((u) => {
         u();
       });
+      window.removeEventListener("donut:close-confirm-requested", handleDom);
     };
   }, []);
 

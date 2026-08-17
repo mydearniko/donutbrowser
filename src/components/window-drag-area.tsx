@@ -125,15 +125,20 @@ export function WindowDragArea() {
 
   const handleClose = async () => {
     void invoke("log_frontend_event", { kind: "windowdrag.close.click" });
+    // Belt and suspenders: emit through Tauri's event bus AND dispatch a plain
+    // DOM event the dialog also listens for, so the confirm dialog opens even
+    // if the IPC event layer is unavailable on this machine.
     try {
       await emit("close-confirm-requested");
+      void invoke("log_frontend_event", { kind: "windowdrag.close.emit-ok" });
     } catch (error) {
       console.error("Failed to request close:", error);
       void invoke("log_frontend_event", {
-        kind: "windowdrag.close.error",
+        kind: "windowdrag.close.emit-error",
         detail: String(error),
       });
     }
+    window.dispatchEvent(new CustomEvent("donut:close-confirm-requested"));
   };
   void handlePointerDown; // kept for backwards-compat; not used on Windows now
 
