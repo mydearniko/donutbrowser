@@ -1309,6 +1309,45 @@ fn confirm_quit(app_handle: tauri::AppHandle) {
   app_handle.exit(0);
 }
 
+/// Window actions driven by the custom titlebar (Windows). Performed natively
+/// on the Rust side so the controls keep working even if the frontend's
+/// `core:window` ACL allows are unavailable — `getCurrentWindow().close()`
+/// etc. all route through `plugin:window|*`, which dies silently on some
+/// machines when the ACL check fails, leaving close/minimize/drag dead while
+/// the rest of the app (custom commands) still works. Native calls bypass
+/// that pipe entirely.
+#[tauri::command]
+fn app_window_action<R: tauri::Runtime>(
+  app_handle: tauri::AppHandle<R>,
+  action: String,
+) -> Result<(), String> {
+  let Some(window) = app_handle.get_webview_window("main") else {
+    log::warn!("app_window_action({action}): no window named \"main\"");
+    return Ok(());
+  };
+  match action.as_str() {
+    "minimize" => {
+      log::info!("app_window_action: minimize");
+      window.minimize().map_err(|e| e.to_string())?;
+    }
+    "toggle_maximize" => {
+      if window.is_maximized().unwrap_or(false) {
+        log::info!("app_window_action: unmaximize");
+        window.unmaximize().map_err(|e| e.to_string())?;
+      } else {
+        log::info!("app_window_action: maximize");
+        window.maximize().map_err(|e| e.to_string())?;
+      }
+    }
+    "start_drag" => {
+      log::info!("app_window_action: start dragging");
+      window.start_dragging().map_err(|e| e.to_string())?;
+    }
+    other => return Err(format!("unknown window action: {other}")),
+  }
+  Ok(())
+}
+
 /// Diagnostic tap from the frontend: forwards UI lifecycle/pointer events into
 /// the Rust log so support reports can show whether the webview loaded, whether
 /// clicks reach the header, and which window actions the user actually hit.
@@ -2297,6 +2336,7 @@ pub fn run() {
       hide_to_tray,
       update_tray_menu,
       log_frontend_event,
+      app_window_action,
       get_supported_browsers,
       is_browser_supported_on_platform,
       download_browser,

@@ -75,14 +75,32 @@ const HomeHeader = ({
   }, []);
 
   const reportHeaderPointer = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.type === "pointerdown") {
-      void invoke("log_frontend_event", {
-        kind: "header.pointerdown",
-        detail: `x=${Math.round(e.clientX)} y=${Math.round(
-          e.clientY,
-        )} button=${e.button} target=${(e.target as HTMLElement).tagName.toLowerCase()}`,
-      });
+    if (e.type !== "pointerdown") return;
+    void invoke("log_frontend_event", {
+      kind: "header.pointerdown",
+      detail: `x=${Math.round(e.clientX)} y=${Math.round(
+        e.clientY,
+      )} button=${e.button} target=${(e.target as HTMLElement).tagName.toLowerCase()}`,
+    });
+    // Drag the undecorated window natively (Rust side) on primary press —
+    // but only when the press is not on an interactive control, so buttons,
+    // inputs and links still receive their clicks. This mirrors Tauri's
+    // `data-tauri-drag-region="deep"` detection but routes through a custom
+    // command that works even when the `core:window` ACL allows are
+    // unavailable (the injected drag script dies there, leaving the header
+    // undraggable on some machines).
+    if (e.button !== 0) return;
+    const target = e.target as Element;
+    if (
+      target.closest(
+        'button, a, input, select, textarea, [role="button"], [contenteditable="true"], label, summary, [tabindex]',
+      )
+    ) {
+      return;
     }
+    void invoke("app_window_action", { action: "start_drag" }).catch(() => {
+      // Non-fatal: dragging just won't engage; clicks still work.
+    });
   };
 
   const isMacOS = platform === "macos";
@@ -122,9 +140,19 @@ const HomeHeader = ({
   const isWindows = platform === "windows";
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: window titlebar drag surface — pointer input is for OS window dragging, not a virtual widget; interactive children (buttons/inputs) handle their own semantics.
     <div
-      data-tauri-drag-region="deep"
       onPointerDown={reportHeaderPointer}
+      onDoubleClick={(e) => {
+        const target = e.target as Element;
+        if (
+          !target.closest(
+            'button, a, input, select, textarea, [role="button"], [contenteditable="true"], label, summary, [tabindex]',
+          )
+        ) {
+          void invoke("app_window_action", { action: "toggle_maximize" });
+        }
+      }}
       className={cn(
         "flex h-11 items-center gap-2 border-b border-border bg-card pl-3 select-none",
         // Windows: WindowDragArea renders three 44px native-style controls

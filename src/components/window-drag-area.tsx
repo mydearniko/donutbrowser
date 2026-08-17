@@ -1,6 +1,7 @@
 "use client";
 
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -90,32 +91,48 @@ export function WindowDragArea() {
   }
 
   // Windows: minimize/maximize/close controls anchored at the top-right
-  // corner of the sys-bar. The HomeHeader's own drag-region overlay handles window
-  // dragging via Tauri 2, so we don't need a separate draggable spacer
-  // covering the whole width.
+  // corner of the sys-bar. All three now go through native Rust commands
+  // (`app_window_action`) instead of `getCurrentWindow()` so they work even
+  // when the `core:window` ACL allows are unavailable on the running
+  // machine; the close button drives the same confirm dialog the OS edge
+  // would show by emitting `close-confirm-requested` directly.
   const handleMinimize = async () => {
     void invoke("log_frontend_event", { kind: "windowdrag.minimize.click" });
     try {
-      await getCurrentWindow().minimize();
+      await invoke("app_window_action", { action: "minimize" });
     } catch (error) {
       console.error("Failed to minimize window:", error);
+      void invoke("log_frontend_event", {
+        kind: "windowdrag.minimize.error",
+        detail: String(error),
+      });
     }
   };
 
   const handleToggleMaximize = async () => {
+    void invoke("log_frontend_event", { kind: "windowdrag.maximize.click" });
     try {
-      await getCurrentWindow().toggleMaximize();
+      await invoke("app_window_action", { action: "toggle_maximize" });
+      setIsMaximized((m) => !m);
     } catch (error) {
       console.error("Failed to toggle window maximize:", error);
+      void invoke("log_frontend_event", {
+        kind: "windowdrag.maximize.error",
+        detail: String(error),
+      });
     }
   };
 
   const handleClose = async () => {
     void invoke("log_frontend_event", { kind: "windowdrag.close.click" });
     try {
-      await getCurrentWindow().close();
+      await emit("close-confirm-requested");
     } catch (error) {
-      console.error("Failed to close window:", error);
+      console.error("Failed to request close:", error);
+      void invoke("log_frontend_event", {
+        kind: "windowdrag.close.error",
+        detail: String(error),
+      });
     }
   };
   void handlePointerDown; // kept for backwards-compat; not used on Windows now
