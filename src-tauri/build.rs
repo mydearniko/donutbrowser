@@ -69,8 +69,16 @@ fn main() {
   // This ensures tauri_build is re-run after sidecar binaries are copied
   println!("cargo:rerun-if-changed=binaries");
 
-  // Only run tauri_build if all external binaries exist
-  // This allows building donut-proxy sidecar without the other binaries present
+  // Run tauri_build only when it won't hit missing external sidecars.
+  // tauri_build ALSO compiles the runtime ACL (capabilities) into OUT_DIR,
+  // which tauri::generate_context embeds. If it never runs the embedded ACL
+  // is EMPTY and every `core:` command is denied at runtime — the
+  // "Command plugin:event|listen not allowed by ACL" toasts, window close /
+  // minimize / start-dragging all dead — while custom #[tauri::command]s
+  // still work, a confusingly half-broken app. Its only step that needs the
+  // donut-proxy sidecar is the final external-binary copy, so when the
+  // sidecar is absent we still run it to emit the ACL (and tolerate that
+  // expected failure; release packaging stages the sidecar itself).
   if external_binaries_exist() {
     tauri_build::build();
 
@@ -85,7 +93,11 @@ fn main() {
       println!("cargo:rustc-link-arg-bins=/MANIFEST:NO");
     }
   } else {
-    println!("cargo:warning=Skipping tauri_build: external binaries not found. This is expected when building sidecar binaries.");
+    if let Err(e) = tauri_build::try_build(tauri_build::Attributes::default()) {
+      println!(
+        "cargo:warning=tauri_build emitted the ACL but skipped the sidecar copy (donut-proxy not built yet): {e}"
+      );
+    }
 
     #[cfg(target_os = "windows")]
     embed_windows_manifest();
