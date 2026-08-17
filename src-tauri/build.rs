@@ -35,6 +35,22 @@ fn main() {
     println!("cargo:rustc-env=BUILD_VERSION=dev-{version}");
   }
 
+  // Inject the exact commit so the log identifies which build is running
+  // (debugging "that build is old" reports). GITHUB_SHA is set by GitHub
+  // Actions; locally we read the working tree's HEAD.
+  let commit = if let Ok(sha) = std::env::var("GITHUB_SHA") {
+    sha.chars().take(7).collect::<String>()
+  } else {
+    std::process::Command::new("git")
+      .args(["rev-parse", "--short", "HEAD"])
+      .output()
+      .ok()
+      .filter(|o| o.status.success())
+      .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+      .unwrap_or_else(|| "unknown".to_string())
+  };
+  println!("cargo:rustc-env=COMMIT_SHA={commit}");
+
   // Inject vault password at build time
   if let Ok(vault_password) = std::env::var("DONUT_BROWSER_VAULT_PASSWORD") {
     println!("cargo:rustc-env=DONUT_BROWSER_VAULT_PASSWORD={vault_password}");

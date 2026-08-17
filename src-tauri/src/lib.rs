@@ -1316,13 +1316,16 @@ fn confirm_quit(app_handle: tauri::AppHandle) {
 /// back. Fall back to a regular minimize so it stays reachable in the taskbar.
 #[tauri::command]
 fn hide_to_tray<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) -> Result<(), String> {
-  if let Some(window) = app_handle.get_webview_window("main") {
-    if app_handle.tray_by_id("main").is_some() {
-      window.hide().map_err(|e| e.to_string())?;
-    } else {
-      log::warn!("No system tray available, minimizing instead of hiding to tray");
-      window.minimize().map_err(|e| e.to_string())?;
-    }
+  let Some(window) = app_handle.get_webview_window("main") else {
+    log::warn!("No window named \"main\" — cannot hide or minimize");
+    return Ok(());
+  };
+  if app_handle.tray_by_id("main").is_some() {
+    log::info!("Hiding to tray");
+    window.hide().map_err(|e| e.to_string())?;
+  } else {
+    log::warn!("No system tray available, minimizing instead of hiding to tray");
+    window.minimize().map_err(|e| e.to_string())?;
   }
   Ok(())
 }
@@ -1432,6 +1435,11 @@ fn setup_system_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  log::info!(
+    "Donut Browser starting — build {}, commit {}",
+    env!("BUILD_VERSION"),
+    env!("COMMIT_SHA")
+  );
   let args: Vec<String> = env::args().collect();
   let startup_url = args.iter().find(|arg| arg.starts_with("http")).cloned();
 
