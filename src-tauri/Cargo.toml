@@ -182,6 +182,12 @@ split-debuginfo = "unpacked"
 [profile.release-portable]
 inherits = "release"
 codegen-units = 16
+# The inherited release profile has lto = "thin", whose whole-program link
+# is the dominant CI cost: measured ~12 minutes of link time on the 2-vCPU
+# runner regardless of compile settings. LTO is where thin LTO gives the
+# least back for a WebView shell + IO proxy, so skip it here and let the
+# final binary rely on codegen-units = 16 inlining.
+lto = false
 
 # The whole app lives in one crate (donutbrowser_lib) that recompiles in
 # full on every source change, so opt-level is the dominant recurring build
