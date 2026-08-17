@@ -1053,9 +1053,14 @@ function looksLikePastedProxy(text: string): boolean {
   if (PROXY_SCHEME_RE.test(value)) return true;
   if (/:\d+$/.test(value)) return true; // host:port, user:pass@host:port, [::1]:port
   const parts = value.split(":");
+  const isPort = (s: string) =>
+    /^\d+$/.test(s) && Number(s) >= 1 && Number(s) <= 65535;
+  if (parts.length === 3) {
+    // host:port:name — trailing non-numeric segment is a display name
+    // (mirrors the backend's 3-part branch).
+    return isPort(parts[1]) && !isPort(parts[2]);
+  }
   if (parts.length === 4) {
-    const isPort = (s: string) =>
-      /^\d+$/.test(s) && Number(s) >= 1 && Number(s) <= 65535;
     // host:port:user:pass or user:pass:host:port
     return isPort(parts[1]) || isPort(parts[3]);
   }
