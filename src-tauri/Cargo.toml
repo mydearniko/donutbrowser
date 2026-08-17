@@ -183,6 +183,15 @@ split-debuginfo = "unpacked"
 inherits = "release"
 codegen-units = 16
 
+# The whole app lives in one crate (donutbrowser_lib) that recompiles in
+# full on every source change, so opt-level is the dominant recurring build
+# cost (measured ~12 min at opt-level 3 on a 2-vCPU runner). opt-level 2
+# is within noise for this WebView GUI + proxy workload and roughly halves
+# that cost. Dependencies keep opt-level 3; they're cached across runs,
+# so this only ever affects cold builds for them.
+[profile.release-portable.package.donutbrowser]
+opt-level = 2
+
 [profile.test]
 # Optimize test builds for faster compilation
 codegen-units = 256
