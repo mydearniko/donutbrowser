@@ -13,6 +13,34 @@ use tokio::time::sleep;
 
 static GLOBAL_SCHEDULER: std::sync::Mutex<Option<Arc<SyncScheduler>>> = std::sync::Mutex::new(None);
 
+/// True while a remote missing-profile scan is running, so an SSE burst
+/// (reconnect replay, several new profiles at once) costs only one listing.
+static MISSING_PROFILE_SCAN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// A sync event referenced a profile this device doesn't have yet — most
+/// likely a brand-new profile created on another device. Nothing local can be
+/// uploaded, so scan remote storage and pull the profile down if it exists.
+/// Debounced: concurrent requests coalesce onto the in-flight scan.
+fn trigger_missing_profile_scan(app: tauri::AppHandle) {
+  if MISSING_PROFILE_SCAN_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+    return;
+  }
+  tauri::async_runtime::spawn(async move {
+    let result = match SyncEngine::create_from_settings(&app).await {
+      Ok(engine) => engine.check_for_missing_synced_profiles(&app).await,
+      Err(_) => Err(SyncError::NotConfigured),
+    };
+    MISSING_PROFILE_SCAN_IN_PROGRESS.store(false, Ordering::SeqCst);
+    match result {
+      Ok(downloaded) => log::info!("Remote profile scan finished: {:?}", downloaded),
+      Err(SyncError::NotConfigured) => {
+        log::debug!("Sync not configured; skipping remote profile scan")
+      }
+      Err(error) => log::warn!("Remote profile scan failed: {error}"),
+    }
+  });
+}
+
 lazy_static::lazy_static! {
   static ref PROFILE_SYNC_MUTEXES: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> =
     std::sync::Mutex::new(HashMap::new());
@@ -475,6 +503,10 @@ impl SyncScheduler {
 
         let Some(profile) = profile_to_sync else {
           in_flight.lock().await.remove(&profile_id);
+          // Not a local profile — a sync event for a profile created on
+          // another device. Real-time sync can't upload it (nothing local),
+          // so pull it down from remote storage if it exists there.
+          trigger_missing_profile_scan(app.clone());
           if crate::team_lock::PROFILE_LOCK
             .is_locked_by_current(&profile_id)
             .await
