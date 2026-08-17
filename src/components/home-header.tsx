@@ -1,5 +1,6 @@
 "use client";
 
+import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GoPlus } from "react-icons/go";
@@ -63,6 +64,27 @@ const HomeHeader = ({
     setPlatform(getCurrentOS());
   }, []);
 
+  // Diagnostic only: prove the header mounted and that pointer events reach
+  // it, so support reports can separate "clicks never land" from a backend
+  // problem. Log-string only, never rendered.
+  useEffect(() => {
+    void invoke("log_frontend_event", {
+      kind: "header.mounted",
+      detail: navigator.userAgent,
+    });
+  }, []);
+
+  const reportHeaderPointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.type === "pointerdown") {
+      void invoke("log_frontend_event", {
+        kind: "header.pointerdown",
+        detail: `x=${Math.round(e.clientX)} y=${Math.round(
+          e.clientY,
+        )} button=${e.button} target=${(e.target as HTMLElement).tagName.toLowerCase()}`,
+      });
+    }
+  };
+
   const isMacOS = platform === "macos";
   const showProfileToolbar = !pageTitle;
 
@@ -102,6 +124,7 @@ const HomeHeader = ({
   return (
     <div
       data-tauri-drag-region="deep"
+      onPointerDown={reportHeaderPointer}
       className={cn(
         "flex h-11 items-center gap-2 border-b border-border bg-card pl-3 select-none",
         // Windows: WindowDragArea renders three 44px native-style controls

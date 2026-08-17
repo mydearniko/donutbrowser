@@ -1304,8 +1304,21 @@ async fn generate_sample_fingerprint(
 /// Confirm a quit chosen from the close-confirmation dialog and exit the app.
 #[tauri::command]
 fn confirm_quit(app_handle: tauri::AppHandle) {
+  log::info!("Quit confirmed — exiting");
   QUIT_CONFIRMED.store(true, Ordering::SeqCst);
   app_handle.exit(0);
+}
+
+/// Diagnostic tap from the frontend: forwards UI lifecycle/pointer events into
+/// the Rust log so support reports can show whether the webview loaded, whether
+/// clicks reach the header, and which window actions the user actually hit.
+/// Log strings only — never user-facing, so no translation needed.
+#[tauri::command]
+fn log_frontend_event(kind: String, detail: Option<String>) {
+  match detail {
+    Some(d) if !d.is_empty() => log::info!("[frontend] {kind}: {d}"),
+    _ => log::info!("[frontend] {kind}"),
+  }
 }
 
 /// Hide the main window so the app keeps running behind its tray icon.
@@ -1430,16 +1443,12 @@ fn setup_system_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
     })
     .build(app)?;
 
+  log::info!("System tray ready");
   Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  log::info!(
-    "Donut Browser starting — build {}, commit {}",
-    env!("BUILD_VERSION"),
-    env!("COMMIT_SHA")
-  );
   let args: Vec<String> = env::args().collect();
   let startup_url = args.iter().find(|arg| arg.starts_with("http")).cloned();
 
@@ -1527,6 +1536,12 @@ pub fn run() {
         .build(),
     )
     .setup(|app| {
+      log::info!(
+        "Donut Browser starting — build {}, commit {}, pid {}",
+        env!("BUILD_VERSION"),
+        env!("COMMIT_SHA"),
+        std::process::id()
+      );
       // Create the main window programmatically FIRST so the UI appears and
       // stays responsive immediately; the heavier best-effort houseskeeping
       // below runs on a background thread instead of blocking setup (a
@@ -1576,8 +1591,10 @@ pub fn run() {
         window.on_window_event(move |event| {
           if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             if QUIT_CONFIRMED.load(Ordering::SeqCst) {
+              log::info!("Close allowed — quit already confirmed");
               return;
             }
+            log::info!("Close requested — showing minimize-or-quit dialog");
             api.prevent_close();
             if let Err(e) = app_handle.emit("close-confirm-requested", ()) {
               log::warn!("Failed to emit close-confirm-requested: {e}");
@@ -2279,6 +2296,7 @@ pub fn run() {
       confirm_quit,
       hide_to_tray,
       update_tray_menu,
+      log_frontend_event,
       get_supported_browsers,
       is_browser_supported_on_platform,
       download_browser,

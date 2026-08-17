@@ -1,5 +1,6 @@
 "use client";
 
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -21,6 +22,16 @@ export function WindowDragArea() {
   useEffect(() => {
     setPlatform(detectPlatform());
   }, []);
+
+  // Diagnostic only: prove the custom titlebar controls mounted on Windows.
+  useEffect(() => {
+    if (platform === "windows") {
+      void invoke("log_frontend_event", {
+        kind: "windowdrag.mounted",
+        detail: navigator.userAgent,
+      });
+    }
+  }, [platform]);
 
   useEffect(() => {
     if (platform !== "windows") return;
@@ -83,6 +94,7 @@ export function WindowDragArea() {
   // dragging via Tauri 2, so we don't need a separate draggable spacer
   // covering the whole width.
   const handleMinimize = async () => {
+    void invoke("log_frontend_event", { kind: "windowdrag.minimize.click" });
     try {
       await getCurrentWindow().minimize();
     } catch (error) {
@@ -99,6 +111,7 @@ export function WindowDragArea() {
   };
 
   const handleClose = async () => {
+    void invoke("log_frontend_event", { kind: "windowdrag.close.click" });
     try {
       await getCurrentWindow().close();
     } catch (error) {

@@ -20,6 +20,7 @@ export function CloseConfirmDialog() {
 
   useEffect(() => {
     const unlistenPromise = listen("close-confirm-requested", () => {
+      void invoke("log_frontend_event", { kind: "closeconfirm.opened" });
       setIsOpen(true);
     });
     return () => {
@@ -48,6 +49,7 @@ export function CloseConfirmDialog() {
   }, [t, i18n]);
 
   const handleMinimize = async () => {
+    void invoke("log_frontend_event", { kind: "closeconfirm.minimize.click" });
     setIsOpen(false);
     try {
       await invoke("hide_to_tray");
@@ -57,6 +59,7 @@ export function CloseConfirmDialog() {
   };
 
   const handleQuit = async () => {
+    void invoke("log_frontend_event", { kind: "closeconfirm.quit.click" });
     setIsOpen(false);
     try {
       await invoke("confirm_quit");
