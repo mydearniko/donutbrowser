@@ -1309,10 +1309,20 @@ fn confirm_quit(app_handle: tauri::AppHandle) {
 }
 
 /// Hide the main window so the app keeps running behind its tray icon.
+///
+/// The system tray is best-effort (e.g. it can be missing on Linux without
+/// libayatana-appindicator). Only `hide()` when a tray actually exists to
+/// restore from — otherwise the window would vanish with nothing to bring it
+/// back. Fall back to a regular minimize so it stays reachable in the taskbar.
 #[tauri::command]
 fn hide_to_tray(app_handle: tauri::AppHandle) -> Result<(), String> {
   if let Some(window) = app_handle.get_webview_window("main") {
-    window.hide().map_err(|e| e.to_string())?;
+    if app_handle.tray_by_id("main").is_some() {
+      window.hide().map_err(|e| e.to_string())?;
+    } else {
+      log::warn!("No system tray available, minimizing instead of hiding to tray");
+      window.minimize().map_err(|e| e.to_string())?;
+    }
   }
   Ok(())
 }

@@ -19,14 +19,10 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
-const HOLD_MS = 150;
-const DRAG_THRESHOLD_PX = 3;
-
 // Any interactive control (buttons, links, inputs) must NOT start a window
-// drag when pressed — otherwise the press-and-hold / drag-threshold logic below
-// hands the pointer to the OS window-move loop and the control's click never
-// fires (e.g. the "+ New" button needing a double-click, and the window
-// un-maximizing on Windows). Mirrors the guard handleDoubleClick already uses.
+// drag when pressed — otherwise the drag hands the pointer to the OS
+// window-move loop and the control's click never fires (e.g. the "+ New"
+// button requiring a double-click, and un-maximizing on Windows).
 const isInteractiveTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof Element)) return false;
   const el = target.closest(
@@ -75,88 +71,25 @@ const HomeHeader = ({
   const isMacOS = platform === "macos";
   const showProfileToolbar = !pageTitle;
 
-  // Press-and-hold drag: any pixel of the sys-bar becomes a drag handle after
-  // HOLD_MS, but quick clicks still reach buttons/inputs underneath.
-  const holdTimeoutRef = useRef<number | null>(null);
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
-  const dragStartedRef = useRef(false);
-  const activePointerIdRef = useRef<number | null>(null);
-  const dragRootRef = useRef<HTMLDivElement | null>(null);
-
-  const clearHold = useCallback(() => {
-    if (holdTimeoutRef.current !== null) {
-      window.clearTimeout(holdTimeoutRef.current);
-      holdTimeoutRef.current = null;
-    }
-  }, []);
-
-  const beginDrag = useCallback(() => {
-    if (dragStartedRef.current) return;
-    dragStartedRef.current = true;
-    clearHold();
-    void getCurrentWindow().startDragging();
-  }, [clearHold]);
-
-  useEffect(() => {
-    return () => {
-      clearHold();
-    };
-  }, [clearHold]);
-
+  // Drag the window by any empty pixel of the titlebar. startDragging must be
+  // called synchronously from within the pointer event — deferring it (timeout
+  // or pointermove) lets the native move loop slip past the original mouse-down
+  // and the window never starts moving on undecorated (Windows) windows.
+  // Interactive controls are excluded above, so clicks still reach them.
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (e.button !== 0) return;
       if (isInteractiveTarget(e.target)) return;
 
-      dragStartedRef.current = false;
-      dragStartRef.current = { x: e.clientX, y: e.clientY };
-      activePointerIdRef.current = e.pointerId;
-
-      clearHold();
-      holdTimeoutRef.current = window.setTimeout(() => {
-        holdTimeoutRef.current = null;
-        beginDrag();
-      }, HOLD_MS);
-    },
-    [beginDrag, clearHold],
-  );
-
-  const handlePointerMove = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      if (
-        dragStartedRef.current ||
-        dragStartRef.current === null ||
-        activePointerIdRef.current !== e.pointerId
-      ) {
+      // Double-click on the empty titlebar area toggles maximize.
+      if (e.detail === 2) {
+        void getCurrentWindow().toggleMaximize();
         return;
       }
-      const dx = e.clientX - dragStartRef.current.x;
-      const dy = e.clientY - dragStartRef.current.y;
-      if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
-        beginDrag();
-      }
-    },
-    [beginDrag],
-  );
 
-  const handlePointerEnd = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      if (activePointerIdRef.current !== e.pointerId) return;
-      clearHold();
-      dragStartRef.current = null;
-      activePointerIdRef.current = null;
-      dragStartedRef.current = false;
+      void getCurrentWindow().startDragging();
     },
-    [clearHold],
-  );
-
-  const handleDoubleClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (isInteractiveTarget(e.target)) return;
-      clearHold();
-      void getCurrentWindow().toggleMaximize();
-    },
-    [clearHold],
+    [],
   );
 
   // Horizontal scroll fades for the group filter strip — when the user
@@ -193,14 +126,8 @@ const HomeHeader = ({
   const isWindows = platform === "windows";
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: titlebar drag surface; the interactive controls inside are real buttons/inputs
     <div
-      ref={dragRootRef}
       onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerEnd}
-      onPointerCancel={handlePointerEnd}
-      onDoubleClick={handleDoubleClick}
       className={cn(
         "flex h-11 items-center gap-2 border-b border-border bg-card pl-3 select-none",
         // Windows: WindowDragArea renders three 44px native-style controls
