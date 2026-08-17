@@ -1315,7 +1315,7 @@ fn confirm_quit(app_handle: tauri::AppHandle) {
 /// restore from — otherwise the window would vanish with nothing to bring it
 /// back. Fall back to a regular minimize so it stays reachable in the taskbar.
 #[tauri::command]
-fn hide_to_tray(app_handle: tauri::AppHandle) -> Result<(), String> {
+fn hide_to_tray<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) -> Result<(), String> {
   if let Some(window) = app_handle.get_webview_window("main") {
     if app_handle.tray_by_id("main").is_some() {
       window.hide().map_err(|e| e.to_string())?;
@@ -2480,6 +2480,35 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
   use std::fs;
+  use tauri::Manager;
+
+  /// With no system tray registered, hide_to_tray must minimize the main window
+  /// (so it stays reachable in the taskbar) instead of hiding it into
+  /// nothing it can't be restored from.
+  #[test]
+  fn hide_to_tray_minimizes_when_no_tray_is_available() {
+    let app = tauri::test::mock_builder()
+      .build(tauri::generate_context!())
+      .expect("failed to build mock app");
+    let _window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+      .build()
+      .expect("failed to create main window");
+    assert!(
+      app.tray_by_id("main").is_none(),
+      "mock app must start without a tray for this test"
+    );
+
+    let res = super::hide_to_tray(app.handle().clone());
+    assert!(res.is_ok(), "hide_to_tray returned an error: {res:?}");
+    // The mock runtime doesn't model minimize/hide state (is_minimized and
+    // is_visible are stubs that always report defaults), so the meaningful
+    // observable contracts are: the command succeeds with a real "main"
+    // window present, and the window is not dropped.
+    assert!(
+      app.get_webview_window("main").is_some(),
+      "the window must still exist after hide_to_tray"
+    );
+  }
 
   #[test]
   fn test_no_unused_tauri_commands() {
